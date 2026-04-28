@@ -3,7 +3,7 @@
 bl_info = {
     "name": "Smart Cache Sequencer",
     "author": "Smart Cache",
-    "version": (1, 0, 4),
+    "version": (1, 0, 7),
     "blender": (4, 4, 0),
     "location": "Sequencer > Sidebar > Smart Cache",
     "description": "AE-inspired disk caching for VSE strips with layered cache and position-independent hashing",
@@ -26,7 +26,8 @@ def get_singletons():
 
 def get_blend_cache_dir(scene):
     """Resolve cache directory relative to the .blend file."""
-    import os, tempfile
+    import os
+    import tempfile
     settings = scene.smart_cache
     if not settings:
         return None
@@ -76,15 +77,15 @@ def auto_cache_all(scene):
         print("[Smart Cache] No cacheable strips found")
 
 
-def init_singletons(scene):
-    """Initialize cache singletons."""
+def _do_init(scene):
+    """Deferred init via timer — actually creates singletons."""
     settings = scene.smart_cache
     if not settings:
-        return
+        return False
 
     cache_dir = get_blend_cache_dir(scene)
     if not cache_dir:
-        return
+        return False
 
     max_size = settings.max_cache_size_gb
 
@@ -100,6 +101,13 @@ def init_singletons(scene):
     print(f"[Smart Cache] Initialized: {cache_dir}")
 
     auto_cache_all(scene)
+    return False  # don't repeat
+
+
+def init_singletons(scene):
+    """Initialize cache singletons — deferred via timer to avoid blocking UI."""
+    print(f"[Smart Cache] Initializing...")
+    bpy.app.timers.register(lambda: _do_init(scene), first_interval=0.1)
 
 
 def cleanup_singletons(context):

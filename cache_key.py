@@ -68,8 +68,9 @@ def strip_base_hash(strip):
         data['elements'] = [e.filename for e in strip.elements]
 
     # Source content range
-    data['frame_offset_start'] = strip.frame_offset_start
-    data['frame_offset_end'] = strip.frame_offset_end
+    if hasattr(strip, 'frame_offset_start'):
+        data['frame_offset_start'] = strip.frame_offset_start
+        data['frame_offset_end'] = strip.frame_offset_end
 
     # Crop
     if hasattr(strip, 'crop'):
@@ -80,9 +81,9 @@ def strip_base_hash(strip):
         }
 
     # Transform (affects pixel output, not just position)
-    data['use_translation'] = strip.use_translation
-    data['use_transform'] = strip.use_transform
-    if strip.use_translation or strip.use_transform:
+    data['use_translation'] = getattr(strip, 'use_translation', False)
+    data['use_transform'] = getattr(strip, 'use_transform', False)
+    if data['use_translation'] or data['use_transform']:
         data['transform'] = {
             'offset_x': strip.transform.offset_x,
             'offset_y': strip.transform.offset_y,
@@ -108,8 +109,8 @@ def strip_base_hash(strip):
         data['animation_end'] = strip.animation_end
 
     # Blend properties that affect output
-    data['blend_type'] = strip.blend_type
-    data['blend_alpha'] = strip.blend_alpha
+    data['blend_type'] = getattr(strip, 'blend_type', 'REPLACE')
+    data['blend_alpha'] = getattr(strip, 'blend_alpha', 1.0)
 
     return hashlib.sha256(json.dumps(data, sort_keys=True).encode()).hexdigest()[:16]
 

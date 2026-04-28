@@ -5,9 +5,10 @@
 import bpy
 import os
 import shutil
+import traceback
 from bpy.props import BoolProperty, FloatProperty, IntProperty, StringProperty, EnumProperty
 
-from . import cache_core as sc
+from . import cache_core
 
 
 class SmartCacheSettings(bpy.types.PropertyGroup):
@@ -56,7 +57,7 @@ class SmartCacheSettings(bpy.types.PropertyGroup):
     )
     memory_cache_limit_mb: IntProperty(
         name="Memory Cache Limit (MB)",
-        description="RAM cache limit for VSE playback (replaces Blender system setting)",
+        description="RAM cache limit for VSE playback",
         default=512,
         min=64,
         max=8192,
@@ -76,6 +77,13 @@ class SmartCacheSettings(bpy.types.PropertyGroup):
     )
 
 
+def _get_singletons_safe():
+    try:
+        return cache_core.get_singletons()
+    except Exception:
+        return (None, None, None, None)
+
+
 class CACHE_PT_smart_cache(bpy.types.Panel):
     bl_label = "Smart Cache"
     bl_idname = "CACHE_PT_smart_cache"
@@ -93,70 +101,51 @@ class CACHE_PT_smart_cache(bpy.types.Panel):
         row.label(text="Enable Smart Cache")
 
         if not settings.enabled:
+            layout.label(text="Turn on to see cache controls")
             return
 
-        manager, renderer, server, prefetch = sc.get_singletons()
+        # === ENABLED: show controls ===
+        manager, renderer, server, prefetch = _get_singletons_safe()
 
-        # Show diagnostic if singletons not initialized
+        # Not initialized yet
         if not manager:
             box = layout.box()
-            box.label(text="Not initialized", icon='ERROR')
-            row = box.row()
-            row.label(text="Check console for errors")
+            box.label(text="Cache: Not Initialized", icon='INFO')
+            box.label(text="Click Re-Initialize or Cache All to start")
             row = box.row()
             row.operator("smart_cache.reinit", text="Re-Initialize", icon='FILE_REFRESH')
             return
 
-        # === MEMORY & CACHE LIMITS ===
-        box = layout.box()
-        box.label(text="Memory & Cache Limits", icon='MEMORY')
-
-        row = box.row(align=True)
-        row.prop(settings, "memory_cache_limit_mb")
-        row.operator("smart_cache.apply_memory_cache", text="", icon='CHECKMARK')
-
-        box.prop(settings, "max_cache_size_gb")
-        box.prop(settings, "cache_quality")
-
-        # Proxy render size (replaces Sequencer header proxy setting)
-        box.prop(settings, "proxy_render_size")
-
-        # === SETTINGS ===
-        box = layout.box()
-        box.label(text="Settings", icon='PREFERENCES')
-        box.prop(settings, "cache_directory")
-        box.prop(settings, "prefetch_lookahead")
-        box.prop(settings, "auto_cache_on_playback")
-        box.prop(settings, "persistent_proxy")
-
         # === CACHE STATUS ===
-        usage = manager.get_disk_usage()
-        box = layout.box()
-        box.label(text="Cache Status", icon='INFO')
+        try:
+            usage = manager.get_disk_usage()
+            box = layout.box()
+            box.label(text="Cache Status", icon='INFO')
+            pct = usage['total_size_mb'] / max(usage['max_size_gb'] * 1024, 1)
+            bar_len = 20
+            filled = int(bar_len * min(pct, 1.0))
+            empty = bar_len - filled
+            box.label(text=f"[{'=' * filled}{'-' * empty}] {usage['total_size_mb']:.0f} MB / {usage['max_size_gb']:.0f} GB")
+            row = box.row()
+            row.label(text=f"Frames: {usage['frame_count']}")
+            row.label(text=f"Strips: {usage['strip_count']}")
+        except Exception:
+            pass
 
-        # Disk usage bar
-        pct = usage['total_size_mb'] / (usage['max_size_gb'] * 1024)
-        bar_len = 20
-        filled = int(bar_len * min(pct, 1.0))
-        empty = bar_len - filled
-        box.label(text=f"[{'=' * filled}{'-' * empty}] {usage['total_size_mb']:.0f}/{usage['max_size_gb']:.0f} GB")
-
-        row = box.row()
-        row.label(text=f"Frames: {usage['frame_count']}")
-        row.label(text=f"Strips: {usage['strip_count']}")
-
-        # Progress bar
+        # Progress
         if renderer and renderer.is_rendering:
-            prog = renderer.progress
-            progress_pct = prog['current'] / max(prog['total'], 1)
-            box.progress(progress=progress_pct)
-            box.label(text=f"Caching: {prog['strip_name']} ({prog['current']}/{prog['total']})")
+            box = layout.box()
+            try:
+                prog = renderer.progress
+                box.progress(progress=prog['current'] / max(prog['total'], 1))
+                box.label(text=f"Caching: {prog['strip_name']} ({prog['current']}/{prog['total']})")
+            except Exception:
+                box.label(text="Caching in progress...")
             box.operator("smart_cache.cancel_render", text="Cancel", icon='CANCEL')
 
         # === ACTIONS ===
         box = layout.box()
         box.label(text="Actions", icon='TOOL_SETTINGS')
-
         row = box.row(align=True)
         row.operator("smart_cache.cache_selected", text="Cache Selected", icon='REC')
         row.operator("smart_cache.cache_all", text="Cache All", icon='REC')
@@ -170,21 +159,38 @@ class CACHE_PT_smart_cache(bpy.types.Panel):
         row.operator("smart_cache.purge_stale", text="Purge Stale", icon='TRASH')
         row.operator("smart_cache.purge_cache", text="Purge All", icon='X')
 
+        # === SETTINGS ===
+        box = layout.box()
+        box.label(text="Settings", icon='PREFERENCES')
+        row = box.row(align=True)
+        row.prop(settings, "memory_cache_limit_mb")
+        row.operator("smart_cache.apply_memory_cache", text="", icon='CHECKMARK')
+        box.prop(settings, "max_cache_size_gb")
+        box.prop(settings, "cache_quality")
+        box.prop(settings, "proxy_render_size")
+        box.prop(settings, "cache_directory")
+        box.prop(settings, "prefetch_lookahead")
+        box.prop(settings, "auto_cache_on_playback")
+        box.prop(settings, "persistent_proxy")
+
         # Per-strip status
-        if manager.strip_hashes:
-            box = layout.box()
-            box.label(text="Cached Strips", icon='SEQUENCE')
-            for strip_name, hashes in manager.strip_hashes.items():
-                has_l0 = manager.strip_has_cache(strip_name, 0)
-                has_l1 = manager.strip_has_cache(strip_name, 1)
-                row = box.row()
-                row.label(text=f"  {strip_name}")
-                sub = row.row(align=True)
-                sub.scale_x = 0.6
-                if has_l0:
-                    sub.label(text="L0", icon='CHECKBOX_HLT')
-                if has_l1:
-                    sub.label(text="L1", icon='CHECKBOX_HLT')
+        try:
+            if manager.strip_hashes:
+                box = layout.box()
+                box.label(text="Cached Strips", icon='SEQUENCE')
+                for strip_name in manager.strip_hashes:
+                    has_l0 = manager.strip_has_cache(strip_name, 0)
+                    has_l1 = manager.strip_has_cache(strip_name, 1)
+                    row = box.row()
+                    row.label(text=f"  {strip_name}")
+                    sub = row.row(align=True)
+                    sub.scale_x = 0.6
+                    if has_l0:
+                        sub.label(text="L0", icon='CHECKBOX_HLT')
+                    if has_l1:
+                        sub.label(text="L1", icon='CHECKBOX_HLT')
+        except Exception:
+            pass
 
 
 class SMART_CACHE_OT_reinit(bpy.types.Operator):
@@ -194,12 +200,11 @@ class SMART_CACHE_OT_reinit(bpy.types.Operator):
 
     def execute(self, context):
         from . import init_singletons, cache_handlers
-        init_singletons(context.scene)
-        if sc.get_singletons()[0]:
-            cache_handlers.register_handlers()
-            self.report({'INFO'}, "Smart Cache re-initialized")
-        else:
-            self.report({'ERROR'}, "Re-initialization failed, check console")
+        try:
+            init_singletons(context.scene)
+            self.report({'INFO'}, "Smart Cache initializing... check console for details")
+        except Exception as e:
+            self.report({'ERROR'}, f"Error: {e}")
         return {'FINISHED'}
 
 
@@ -210,14 +215,18 @@ class SMART_CACHE_OT_cache_selected(bpy.types.Operator):
 
     def execute(self, context):
         settings = context.scene.smart_cache
-        manager, renderer, server, prefetch = sc.get_singletons()
+        manager, renderer, server, prefetch = _get_singletons_safe()
 
         if not manager or not renderer:
             if settings.enabled:
                 from . import init_singletons, cache_handlers
-                init_singletons(context.scene)
-                cache_handlers.register_handlers()
-                manager, renderer, server, prefetch = sc.get_singletons()
+                try:
+                    init_singletons(context.scene)
+                    cache_handlers.register_handlers()
+                    manager, renderer, server, prefetch = _get_singletons_safe()
+                except Exception as e:
+                    self.report({'ERROR'}, f"Init failed: {e}")
+                    return {'CANCELLED'}
             if not manager:
                 self.report({'WARNING'}, "Smart Cache not initialized")
                 return {'CANCELLED'}
@@ -227,6 +236,7 @@ class SMART_CACHE_OT_cache_selected(bpy.types.Operator):
 
         se = context.scene.sequence_editor
         if not se:
+            self.report({'WARNING'}, "No sequence editor found")
             return {'CANCELLED'}
 
         count = 0
@@ -235,11 +245,9 @@ class SMART_CACHE_OT_cache_selected(bpy.types.Operator):
                 continue
             if strip.mute:
                 continue
-
             start = strip.frame_final_start
             end = strip.frame_final_end
             renderer.queue_strip_range(strip, start, end, 0)
-
             if hasattr(strip, 'modifiers') and len(strip.modifiers) > 0:
                 renderer.queue_strip_range(strip, start, end, 1)
             count += 1
@@ -260,14 +268,18 @@ class SMART_CACHE_OT_cache_all(bpy.types.Operator):
 
     def execute(self, context):
         settings = context.scene.smart_cache
-        manager, renderer, server, prefetch = sc.get_singletons()
+        manager, renderer, server, prefetch = _get_singletons_safe()
 
         if not manager or not renderer:
             if settings.enabled:
                 from . import init_singletons, cache_handlers
-                init_singletons(context.scene)
-                cache_handlers.register_handlers()
-                manager, renderer, server, prefetch = sc.get_singletons()
+                try:
+                    init_singletons(context.scene)
+                    cache_handlers.register_handlers()
+                    manager, renderer, server, prefetch = _get_singletons_safe()
+                except Exception as e:
+                    self.report({'ERROR'}, f"Init failed: {e}")
+                    return {'CANCELLED'}
             if not manager:
                 self.report({'WARNING'}, "Smart Cache not initialized")
                 return {'CANCELLED'}
@@ -277,6 +289,7 @@ class SMART_CACHE_OT_cache_all(bpy.types.Operator):
 
         se = context.scene.sequence_editor
         if not se:
+            self.report({'WARNING'}, "No sequence editor found")
             return {'CANCELLED'}
 
         count = 0
@@ -285,11 +298,9 @@ class SMART_CACHE_OT_cache_all(bpy.types.Operator):
                 continue
             if strip.mute:
                 continue
-
             start = strip.frame_final_start
             end = strip.frame_final_end
             renderer.queue_strip_range(strip, start, end, 0)
-
             if hasattr(strip, 'modifiers') and len(strip.modifiers) > 0:
                 renderer.queue_strip_range(strip, start, end, 1)
             count += 1
@@ -309,7 +320,7 @@ class SMART_CACHE_OT_cancel_render(bpy.types.Operator):
     bl_description = "Stop background cache rendering"
 
     def execute(self, context):
-        manager, renderer, server, prefetch = sc.get_singletons()
+        manager, renderer, server, prefetch = _get_singletons_safe()
         if renderer:
             renderer.cancel_render()
         self.report({'INFO'}, "Rendering cancelled")
@@ -322,18 +333,16 @@ class SMART_CACHE_OT_toggle_cache_playback(bpy.types.Operator):
     bl_description = "Enable/disable proxy strip mode for cached playback"
 
     def execute(self, context):
-        manager, renderer, server, prefetch = sc.get_singletons()
+        manager, renderer, server, prefetch = _get_singletons_safe()
         if not server:
             self.report({'WARNING'}, "Smart Cache not initialized")
             return {'CANCELLED'}
-
         if server.is_active:
             server.disable_cache_playback(context)
             self.report({'INFO'}, "Cache playback disabled")
         else:
             server.enable_cache_playback(context)
             self.report({'INFO'}, "Cache playback enabled")
-
         return {'FINISHED'}
 
 
@@ -346,7 +355,7 @@ class SMART_CACHE_OT_purge_cache(bpy.types.Operator):
         return context.window_manager.invoke_confirm(self, event)
 
     def execute(self, context):
-        manager, renderer, server, prefetch = sc.get_singletons()
+        manager, renderer, server, prefetch = _get_singletons_safe()
         if server and server.is_active:
             server.disable_cache_playback(context)
         if manager:
@@ -361,7 +370,7 @@ class SMART_CACHE_OT_purge_stale(bpy.types.Operator):
     bl_description = "Delete cache for strips that no longer exist"
 
     def execute(self, context):
-        manager, renderer, server, prefetch = sc.get_singletons()
+        manager, renderer, server, prefetch = _get_singletons_safe()
         if manager:
             manager.purge_stale()
         self.report({'INFO'}, "Stale cache purged")
@@ -371,17 +380,19 @@ class SMART_CACHE_OT_purge_stale(bpy.types.Operator):
 class SMART_CACHE_OT_apply_memory_cache(bpy.types.Operator):
     bl_idname = "smart_cache.apply_memory_cache"
     bl_label = "Apply Memory Cache Limit"
-    bl_description = "Set VSE memory cache limit (replaces Edit > Preferences > System setting)"
+    bl_description = "Set VSE memory cache limit"
 
     def execute(self, context):
         settings = context.scene.smart_cache
-        # Apply to Blender's system memory cache limit
         try:
-            # Set scene-level sequencer memory cache limit
-            context.scene.sequence_editor.cache_memory_limit = settings.memory_cache_limit_mb
-            self.report({'INFO'}, f"Memory cache limit set to {settings.memory_cache_limit_mb} MB")
-        except Exception:
-            self.report({'WARNING'}, "Could not set memory cache limit")
+            se = context.scene.sequence_editor
+            if se:
+                se.cache_memory_limit = settings.memory_cache_limit_mb
+                self.report({'INFO'}, f"Memory cache limit set to {settings.memory_cache_limit_mb} MB")
+            else:
+                self.report({'WARNING'}, "No sequence editor found")
+        except Exception as e:
+            self.report({'WARNING'}, f"Could not set memory cache limit: {e}")
         return {'FINISHED'}
 
 
@@ -391,15 +402,12 @@ class SMART_CACHE_OT_open_cache_dir(bpy.types.Operator):
     bl_description = "Open the cache folder in file explorer"
 
     def execute(self, context):
-        import subprocess
-        manager, renderer, server, prefetch = sc.get_singletons()
+        manager, renderer, server, prefetch = _get_singletons_safe()
         if manager:
             cache_dir = manager.base_dir
             if os.path.exists(cache_dir):
                 if os.name == 'nt':
                     os.startfile(cache_dir)
-                else:
-                    subprocess.Popen(['xdg-open', cache_dir])
                 self.report({'INFO'}, f"Opened: {cache_dir}")
             else:
                 self.report({'WARNING'}, "Cache directory does not exist")
@@ -415,7 +423,6 @@ class SMART_CACHE_OT_build_proxies(bpy.types.Operator):
         se = context.scene.sequence_editor
         if not se:
             return {'CANCELLED'}
-
         count = 0
         for strip in se.sequences_all:
             if strip.type in ('MOVIE', 'IMAGE'):
@@ -425,39 +432,32 @@ class SMART_CACHE_OT_build_proxies(bpy.types.Operator):
                 strip.proxy.build_75 = False
                 strip.proxy.build_100 = False
                 count += 1
-
         if count > 0:
             bpy.ops.sequencer.rebuild_proxy()
             self.report({'INFO'}, f"Proxy rebuild started for {count} strip(s)")
         else:
             self.report({'WARNING'}, "No video strips found")
-
         return {'FINISHED'}
 
 
 class SMART_CACHE_OT_clear_cache_memory(bpy.types.Operator):
     bl_idname = "smart_cache.clear_cache_memory"
     bl_label = "Clear Cache Memory"
-    bl_description = "Purge all VSE memory and disk cache (like AE's Purge All Memory)"
+    bl_description = "Purge all VSE memory and disk cache"
 
     def invoke(self, context, event):
         return context.window_manager.invoke_confirm(self, event)
 
     def execute(self, context):
-        # Clear Blender's VSE cache
         try:
             bpy.ops.sequencer.clear_proxy_cache()
-            self.report({'INFO'}, "Proxy cache cleared")
         except Exception:
             pass
-
-        # Clear our disk cache
-        manager, renderer, server, prefetch = sc.get_singletons()
+        manager, renderer, server, prefetch = _get_singletons_safe()
         if server and server.is_active:
             server.disable_cache_playback(context)
         if manager:
             manager.purge_all()
-
         self.report({'INFO'}, "All cache memory and disk cache cleared")
         return {'FINISHED'}
 
