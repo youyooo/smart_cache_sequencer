@@ -49,6 +49,42 @@ def get_blend_cache_dir():
     return raw_path
 
 
+def auto_cache_all(scene):
+    """Automatically queue all VSE strips for caching."""
+    se = scene.sequence_editor
+    if not se:
+        return
+
+    settings = scene.smart_cache
+    manager, renderer, server, prefetch = get_singletons()
+    if not manager or not renderer:
+        return
+
+    manager.max_size_bytes = int(settings.max_cache_size_gb * 1024 * 1024 * 1024)
+    manager.ensure_dirs()
+
+    count = 0
+    for strip in se.sequences_all:
+        if strip.type not in ('MOVIE', 'IMAGE', 'SCENE'):
+            continue
+        if strip.mute:
+            continue
+
+        start = strip.frame_final_start
+        end = strip.frame_final_end
+        renderer.queue_strip_range(strip, start, end, 0)
+
+        if hasattr(strip, 'modifiers') and len(strip.modifiers) > 0:
+            renderer.queue_strip_range(strip, start, end, 1)
+        count += 1
+
+    if count > 0:
+        renderer.start_render()
+        print(f"[Smart Cache] Auto-caching {count} strip(s)")
+    else:
+        print("[Smart Cache] No cacheable strips found")
+
+
 def init_singletons():
     """Initialize cache singletons."""
     settings = bpy.context.scene.smart_cache
@@ -74,6 +110,9 @@ def init_singletons():
     _singletons['prefetch'] = prefetch
 
     print(f"[Smart Cache] Initialized: {cache_dir}")
+
+    # Auto-cache all strips immediately
+    auto_cache_all(bpy.context.scene)
 
 
 def cleanup_singletons():
