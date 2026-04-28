@@ -97,6 +97,16 @@ class CACHE_PT_smart_cache(bpy.types.Panel):
 
         manager, renderer, server, prefetch = sc.get_singletons()
 
+        # Show diagnostic if singletons not initialized
+        if not manager:
+            box = layout.box()
+            box.label(text="Not initialized", icon='ERROR')
+            row = box.row()
+            row.label(text="Check console for errors")
+            row = box.row()
+            row.operator("smart_cache.reinit", text="Re-Initialize", icon='FILE_REFRESH')
+            return
+
         # === MEMORY & CACHE LIMITS ===
         box = layout.box()
         box.label(text="Memory & Cache Limits", icon='MEMORY')
@@ -120,29 +130,28 @@ class CACHE_PT_smart_cache(bpy.types.Panel):
         box.prop(settings, "persistent_proxy")
 
         # === CACHE STATUS ===
-        if manager:
-            usage = manager.get_disk_usage()
-            box = layout.box()
-            box.label(text="Cache Status", icon='INFO')
+        usage = manager.get_disk_usage()
+        box = layout.box()
+        box.label(text="Cache Status", icon='INFO')
 
-            # Disk usage bar
-            pct = usage['total_size_mb'] / (usage['max_size_gb'] * 1024)
-            bar_len = 20
-            filled = int(bar_len * min(pct, 1.0))
-            empty = bar_len - filled
-            box.label(text=f"[{'█' * filled}{'░' * empty}] {usage['total_size_mb']:.0f}/{usage['max_size_gb']:.0f} GB")
+        # Disk usage bar
+        pct = usage['total_size_mb'] / (usage['max_size_gb'] * 1024)
+        bar_len = 20
+        filled = int(bar_len * min(pct, 1.0))
+        empty = bar_len - filled
+        box.label(text=f"[{'=' * filled}{'-' * empty}] {usage['total_size_mb']:.0f}/{usage['max_size_gb']:.0f} GB")
 
-            row = box.row()
-            row.label(text=f"Frames: {usage['frame_count']}")
-            row.label(text=f"Strips: {usage['strip_count']}")
+        row = box.row()
+        row.label(text=f"Frames: {usage['frame_count']}")
+        row.label(text=f"Strips: {usage['strip_count']}")
 
-            # Progress bar
-            if renderer and renderer.is_rendering:
-                prog = renderer.progress
-                progress_pct = prog['current'] / max(prog['total'], 1)
-                box.progress(progress=progress_pct)
-                box.label(text=f"Caching: {prog['strip_name']} ({prog['current']}/{prog['total']})")
-                box.operator("smart_cache.cancel_render", text="Cancel", icon='CANCEL')
+        # Progress bar
+        if renderer and renderer.is_rendering:
+            prog = renderer.progress
+            progress_pct = prog['current'] / max(prog['total'], 1)
+            box.progress(progress=progress_pct)
+            box.label(text=f"Caching: {prog['strip_name']} ({prog['current']}/{prog['total']})")
+            box.operator("smart_cache.cancel_render", text="Cancel", icon='CANCEL')
 
         # === ACTIONS ===
         box = layout.box()
@@ -162,7 +171,7 @@ class CACHE_PT_smart_cache(bpy.types.Panel):
         row.operator("smart_cache.purge_cache", text="Purge All", icon='X')
 
         # Per-strip status
-        if manager and manager.strip_hashes:
+        if manager.strip_hashes:
             box = layout.box()
             box.label(text="Cached Strips", icon='SEQUENCE')
             for strip_name, hashes in manager.strip_hashes.items():
@@ -178,6 +187,22 @@ class CACHE_PT_smart_cache(bpy.types.Panel):
                     sub.label(text="L1", icon='CHECKBOX_HLT')
 
 
+class SMART_CACHE_OT_reinit(bpy.types.Operator):
+    bl_idname = "smart_cache.reinit"
+    bl_label = "Re-Initialize Smart Cache"
+    bl_description = "Re-initialize cache singletons"
+
+    def execute(self, context):
+        from . import init_singletons, cache_handlers
+        init_singletons(context.scene)
+        if sc.get_singletons()[0]:
+            cache_handlers.register_handlers()
+            self.report({'INFO'}, "Smart Cache re-initialized")
+        else:
+            self.report({'ERROR'}, "Re-initialization failed, check console")
+        return {'FINISHED'}
+
+
 class SMART_CACHE_OT_cache_selected(bpy.types.Operator):
     bl_idname = "smart_cache.cache_selected"
     bl_label = "Cache Selected Strips"
@@ -189,8 +214,8 @@ class SMART_CACHE_OT_cache_selected(bpy.types.Operator):
 
         if not manager or not renderer:
             if settings.enabled:
-                sc.init_singletons()
-                from . import cache_handlers
+                from . import init_singletons, cache_handlers
+                init_singletons(context.scene)
                 cache_handlers.register_handlers()
                 manager, renderer, server, prefetch = sc.get_singletons()
             if not manager:
@@ -239,8 +264,8 @@ class SMART_CACHE_OT_cache_all(bpy.types.Operator):
 
         if not manager or not renderer:
             if settings.enabled:
-                sc.init_singletons()
-                from . import cache_handlers
+                from . import init_singletons, cache_handlers
+                init_singletons(context.scene)
                 cache_handlers.register_handlers()
                 manager, renderer, server, prefetch = sc.get_singletons()
             if not manager:
@@ -440,6 +465,7 @@ class SMART_CACHE_OT_clear_cache_memory(bpy.types.Operator):
 classes = [
     SmartCacheSettings,
     CACHE_PT_smart_cache,
+    SMART_CACHE_OT_reinit,
     SMART_CACHE_OT_cache_selected,
     SMART_CACHE_OT_cache_all,
     SMART_CACHE_OT_cancel_render,
