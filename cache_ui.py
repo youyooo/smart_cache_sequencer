@@ -7,7 +7,7 @@ import os
 import shutil
 from bpy.props import BoolProperty, FloatProperty, IntProperty, StringProperty, EnumProperty
 
-from . import __init__ as sc
+from . import cache_core as sc
 
 
 class SmartCacheSettings(bpy.types.PropertyGroup):

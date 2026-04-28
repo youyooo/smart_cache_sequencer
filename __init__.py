@@ -3,7 +3,7 @@
 bl_info = {
     "name": "Smart Cache Sequencer",
     "author": "Smart Cache",
-    "version": (1, 0, 0),
+    "version": (1, 0, 2),
     "blender": (4, 4, 0),
     "location": "Sequencer > Sidebar > Smart Cache",
     "description": "AE-inspired disk caching for VSE strips with layered cache and position-independent hashing",
@@ -17,19 +17,11 @@ from . import cache_render as cr_mod
 from . import cache_serve as cs_mod
 from . import cache_handlers
 from . import cache_ui
-
-# Module-level singleton storage
-_singletons = {}
+from . import cache_core
 
 
 def get_singletons():
-    """Return (manager, renderer, server, prefetch) tuple."""
-    return (
-        _singletons.get('manager'),
-        _singletons.get('renderer'),
-        _singletons.get('server'),
-        _singletons.get('prefetch'),
-    )
+    return cache_core.get_singletons()
 
 
 def get_blend_cache_dir():
@@ -104,21 +96,17 @@ def init_singletons():
     server = cs_mod.CachePlaybackController(manager)
     prefetch = cs_mod.PrefetchManager(manager, renderer, settings.get("prefetch_lookahead", 30))
 
-    _singletons['manager'] = manager
-    _singletons['renderer'] = renderer
-    _singletons['server'] = server
-    _singletons['prefetch'] = prefetch
+    cache_core.set_singletons(manager, renderer, server, prefetch)
 
     print(f"[Smart Cache] Initialized: {cache_dir}")
 
-    # Auto-cache all strips immediately
     auto_cache_all(bpy.context.scene)
 
 
 def cleanup_singletons():
     """Stop rendering and disable proxy strips."""
-    renderer = _singletons.get('renderer')
-    server = _singletons.get('server')
+    renderer = cache_core.get_singletons()[1]
+    server = cache_core.get_singletons()[2]
 
     if renderer:
         renderer.cancel_render()
@@ -128,7 +116,7 @@ def cleanup_singletons():
         except Exception:
             pass
 
-    _singletons.clear()
+    cache_core.clear_singletons()
     print("[Smart Cache] Cleaned up")
 
 

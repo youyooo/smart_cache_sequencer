@@ -6,7 +6,7 @@ import bpy
 from bpy.app.handlers import persistent
 
 from . import cache_key as ck
-from . import __init__ as sc
+from . import cache_core as sc
 
 
 def _get():
