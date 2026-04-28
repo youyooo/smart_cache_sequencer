@@ -3,7 +3,9 @@
 """Sidebar panel, property group, and operators for Smart Cache."""
 
 import bpy
-from bpy.props import BoolProperty, FloatProperty, IntProperty, StringProperty
+import os
+import shutil
+from bpy.props import BoolProperty, FloatProperty, IntProperty, StringProperty, EnumProperty
 
 from . import __init__ as sc
 
@@ -52,6 +54,26 @@ class SmartCacheSettings(bpy.types.PropertyGroup):
         description="Keep proxy strips active after playback stops",
         default=False,
     )
+    memory_cache_limit_mb: IntProperty(
+        name="Memory Cache Limit (MB)",
+        description="RAM cache limit for VSE playback (replaces Blender system setting)",
+        default=512,
+        min=64,
+        max=8192,
+        step=100,
+    )
+    proxy_render_size: EnumProperty(
+        name="Proxy Render Size",
+        description="Proxy resolution for VSE preview",
+        items=[
+            ('FULL', 'Full Resolution', 'Render at full resolution'),
+            ('PROXY_100', '100%', 'Render at 100% proxy resolution'),
+            ('PROXY_75', '75%', 'Render at 75% proxy resolution'),
+            ('PROXY_50', '50%', 'Render at 50% proxy resolution'),
+            ('PROXY_25', '25%', 'Render at 25% proxy resolution'),
+        ],
+        default='FULL',
+    )
 
 
 class CACHE_PT_smart_cache(bpy.types.Panel):
@@ -73,25 +95,43 @@ class CACHE_PT_smart_cache(bpy.types.Panel):
         if not settings.enabled:
             return
 
-        # Settings
+        manager, renderer, server, prefetch = sc.get_singletons()
+
+        # === MEMORY & CACHE LIMITS ===
+        box = layout.box()
+        box.label(text="Memory & Cache Limits", icon='MEMORY')
+
+        row = box.row(align=True)
+        row.prop(settings, "memory_cache_limit_mb")
+        row.operator("smart_cache.apply_memory_cache", text="", icon='CHECKMARK')
+
+        box.prop(settings, "max_cache_size_gb")
+        box.prop(settings, "cache_quality")
+
+        # Proxy render size (replaces Sequencer header proxy setting)
+        box.prop(settings, "proxy_render_size")
+
+        # === SETTINGS ===
         box = layout.box()
         box.label(text="Settings", icon='PREFERENCES')
         box.prop(settings, "cache_directory")
-        box.prop(settings, "max_cache_size_gb")
         box.prop(settings, "prefetch_lookahead")
         box.prop(settings, "auto_cache_on_playback")
         box.prop(settings, "persistent_proxy")
 
-        manager, renderer, server, prefetch = sc.get_singletons()
-
-        # Cache status
+        # === CACHE STATUS ===
         if manager:
             usage = manager.get_disk_usage()
             box = layout.box()
             box.label(text="Cache Status", icon='INFO')
-            row = box.row()
-            row.label(text=f"Size: {usage['total_size_mb']:.1f} MB")
-            row.label(text=f"/ {usage['max_size_gb']:.0f} GB")
+
+            # Disk usage bar
+            pct = usage['total_size_mb'] / (usage['max_size_gb'] * 1024)
+            bar_len = 20
+            filled = int(bar_len * min(pct, 1.0))
+            empty = bar_len - filled
+            box.label(text=f"[{'█' * filled}{'░' * empty}] {usage['total_size_mb']:.0f}/{usage['max_size_gb']:.0f} GB")
+
             row = box.row()
             row.label(text=f"Frames: {usage['frame_count']}")
             row.label(text=f"Strips: {usage['strip_count']}")
@@ -104,7 +144,7 @@ class CACHE_PT_smart_cache(bpy.types.Panel):
                 box.label(text=f"Caching: {prog['strip_name']} ({prog['current']}/{prog['total']})")
                 box.operator("smart_cache.cancel_render", text="Cancel", icon='CANCEL')
 
-        # Actions
+        # === ACTIONS ===
         box = layout.box()
         box.label(text="Actions", icon='TOOL_SETTINGS')
 
@@ -303,6 +343,100 @@ class SMART_CACHE_OT_purge_stale(bpy.types.Operator):
         return {'FINISHED'}
 
 
+class SMART_CACHE_OT_apply_memory_cache(bpy.types.Operator):
+    bl_idname = "smart_cache.apply_memory_cache"
+    bl_label = "Apply Memory Cache Limit"
+    bl_description = "Set VSE memory cache limit (replaces Edit > Preferences > System setting)"
+
+    def execute(self, context):
+        settings = context.scene.smart_cache
+        # Apply to Blender's system memory cache limit
+        try:
+            # Set scene-level sequencer memory cache limit
+            context.scene.sequence_editor.cache_memory_limit = settings.memory_cache_limit_mb
+            self.report({'INFO'}, f"Memory cache limit set to {settings.memory_cache_limit_mb} MB")
+        except Exception:
+            self.report({'WARNING'}, "Could not set memory cache limit")
+        return {'FINISHED'}
+
+
+class SMART_CACHE_OT_open_cache_dir(bpy.types.Operator):
+    bl_idname = "smart_cache.open_cache_dir"
+    bl_label = "Open Cache Directory"
+    bl_description = "Open the cache folder in file explorer"
+
+    def execute(self, context):
+        import subprocess
+        manager, renderer, server, prefetch = sc.get_singletons()
+        if manager:
+            cache_dir = manager.base_dir
+            if os.path.exists(cache_dir):
+                if os.name == 'nt':
+                    os.startfile(cache_dir)
+                else:
+                    subprocess.Popen(['xdg-open', cache_dir])
+                self.report({'INFO'}, f"Opened: {cache_dir}")
+            else:
+                self.report({'WARNING'}, "Cache directory does not exist")
+        return {'FINISHED'}
+
+
+class SMART_CACHE_OT_build_proxies(bpy.types.Operator):
+    bl_idname = "smart_cache.build_proxies"
+    bl_label = "Build Proxies for All"
+    bl_description = "Enable and rebuild proxy files for all video strips"
+
+    def execute(self, context):
+        se = context.scene.sequence_editor
+        if not se:
+            return {'CANCELLED'}
+
+        count = 0
+        for strip in se.sequences_all:
+            if strip.type in ('MOVIE', 'IMAGE'):
+                strip.use_proxy = True
+                strip.proxy.build_25 = True
+                strip.proxy.build_50 = True
+                strip.proxy.build_75 = False
+                strip.proxy.build_100 = False
+                count += 1
+
+        if count > 0:
+            bpy.ops.sequencer.rebuild_proxy()
+            self.report({'INFO'}, f"Proxy rebuild started for {count} strip(s)")
+        else:
+            self.report({'WARNING'}, "No video strips found")
+
+        return {'FINISHED'}
+
+
+class SMART_CACHE_OT_clear_cache_memory(bpy.types.Operator):
+    bl_idname = "smart_cache.clear_cache_memory"
+    bl_label = "Clear Cache Memory"
+    bl_description = "Purge all VSE memory and disk cache (like AE's Purge All Memory)"
+
+    def invoke(self, context, event):
+        return context.window_manager.invoke_confirm(self, event)
+
+    def execute(self, context):
+        # Clear Blender's VSE cache
+        try:
+            bpy.ops.sequencer.clear_proxy_cache()
+            self.report({'INFO'}, "Proxy cache cleared")
+        except Exception:
+            pass
+
+        # Clear our disk cache
+        manager, renderer, server, prefetch = sc.get_singletons()
+        if server and server.is_active:
+            server.disable_cache_playback(context)
+        if manager:
+            manager.purge_all()
+
+        self.report({'INFO'}, "All cache memory and disk cache cleared")
+        return {'FINISHED'}
+
+
 classes = [
     SmartCacheSettings,
     CACHE_PT_smart_cache,
@@ -312,6 +446,10 @@ classes = [
     SMART_CACHE_OT_toggle_cache_playback,
     SMART_CACHE_OT_purge_cache,
     SMART_CACHE_OT_purge_stale,
+    SMART_CACHE_OT_apply_memory_cache,
+    SMART_CACHE_OT_open_cache_dir,
+    SMART_CACHE_OT_build_proxies,
+    SMART_CACHE_OT_clear_cache_memory,
 ]
 
 
