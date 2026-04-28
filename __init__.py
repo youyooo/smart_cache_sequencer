@@ -3,7 +3,7 @@
 bl_info = {
     "name": "Smart Cache Sequencer",
     "author": "Smart Cache",
-    "version": (1, 0, 3),
+    "version": (1, 0, 4),
     "blender": (4, 4, 0),
     "location": "Sequencer > Sidebar > Smart Cache",
     "description": "AE-inspired disk caching for VSE strips with layered cache and position-independent hashing",
@@ -26,7 +26,7 @@ def get_singletons():
 
 def get_blend_cache_dir(scene):
     """Resolve cache directory relative to the .blend file."""
-    import os
+    import os, tempfile
     settings = scene.smart_cache
     if not settings:
         return None
