@@ -73,6 +73,8 @@ def init_singletons():
     _singletons['server'] = server
     _singletons['prefetch'] = prefetch
 
+    print(f"[Smart Cache] Initialized: {cache_dir}")
+
 
 def cleanup_singletons():
     """Stop rendering and disable proxy strips."""
@@ -88,12 +90,28 @@ def cleanup_singletons():
             pass
 
     _singletons.clear()
+    print("[Smart Cache] Cleaned up")
+
+
+def _on_enabled_change(self, context):
+    """Called when the user toggles the enabled checkbox."""
+    settings = context.scene.smart_cache
+    if not settings:
+        return
+
+    if settings.enabled:
+        init_singletons()
+        cache_handlers.register_handlers()
+    else:
+        cleanup_singletons()
+        cache_handlers.unregister_handlers()
 
 
 def register():
     cache_ui.register()
     bpy.types.Scene.smart_cache = bpy.props.PointerProperty(
         type=cache_ui.SmartCacheSettings,
+        update=_on_enabled_change,
     )
 
 

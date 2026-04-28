@@ -12,19 +12,11 @@ CACHEABLE_TYPES = {'MOVIE', 'IMAGE', 'SCENE'}
 
 
 class CachePlaybackController:
-    """Creates proxy Image Sequence strips from cached frames.
-
-    Strategy:
-    - Original strips are muted during cache playback
-    - Proxy strips (Image Sequences) reference the cached PNG directory
-    - Effect strips composite normally over proxy strips
-    - Proxy strips are placed on channels above their originals
-    - On final render (F12), proxies are auto-disabled
-    """
+    """Creates proxy Image Sequence strips from cached frames."""
 
     def __init__(self, cache_manager):
         self.cache_manager = cache_manager
-        self.proxy_strips: dict[str, list] = {}  # original_name -> [proxy strips]
+        self.proxy_strips: dict[str, list] = {}
         self._original_mutes: dict[str, bool] = {}
         self._is_active = False
 
@@ -42,7 +34,6 @@ class CachePlaybackController:
         self._original_mutes.clear()
         self.proxy_strips.clear()
 
-        # Find strips with cache entries
         cached_strips = set()
         for entry in self.cache_manager.index.values():
             cached_strips.add(entry['strip_name'])
@@ -58,33 +49,25 @@ class CachePlaybackController:
             if strip.mute:
                 continue
 
-            # Get cached frame range
             frames = self.cache_manager.get_cached_frames(strip_name, layer=0)
             if not frames:
                 continue
 
-            # Save original mute state
             self._original_mutes[strip_name] = strip.mute
 
-            # Get cache directory
             cache_dir = self.cache_manager.get_cache_dir_for_strip(strip_name, layer=0)
             if not cache_dir or not os.path.exists(cache_dir):
                 continue
 
-            # Find first cached frame file as entry point
-            first_frame = frames[0]
-            safe_name = _safe_strip_name(strip_name)
-            first_file = os.path.join(cache_dir, f"{safe_name}_{first_frame:04d}.png")
-            if not os.path.exists(first_file):
+            png_files = sorted([f for f in os.listdir(cache_dir) if f.endswith('.png')])
+            if not png_files:
                 continue
 
-            # Place proxy on channel above original
+            first_file = os.path.join(cache_dir, png_files[0])
             proxy_channel = strip.channel + 1
-
             proxy_name = f"{CACHE_PREFIX}{strip_name}"
 
             try:
-                # Create image sequence strip pointing to cache directory
                 proxy = se.sequences.new_image(
                     name=proxy_name,
                     filepath=first_file,
@@ -93,7 +76,6 @@ class CachePlaybackController:
                     fit_method='STRETCH',
                 )
                 proxy.use_animation = True
-                # Set the animation range to match cached frames
                 proxy.frame_start = frames[0]
                 proxy.frame_offset_start = 0
                 proxy.frame_final_duration = len(frames)
@@ -102,26 +84,10 @@ class CachePlaybackController:
                 proxy.mute = False
                 proxy.lock = True
                 proxy.select = False
-
                 self.proxy_strips[strip_name] = [proxy]
+            except Exception as e:
+                print(f"[Smart Cache] Proxy creation failed for {strip_name}: {e}")
 
-            except Exception:
-                # Fallback: try movie strip
-                try:
-                    proxy = se.sequences.new_movie(
-                        name=proxy_name,
-                        filepath=first_file,
-                        channel=proxy_channel,
-                        frame_start=strip.frame_final_start,
-                    )
-                    proxy.mute = False
-                    proxy.lock = True
-                    proxy.select = False
-                    self.proxy_strips[strip_name] = [proxy]
-                except Exception:
-                    pass
-
-        # Mute all original cached strips
         for strip_name in self._original_mutes:
             strip = self._find_strip(se, strip_name)
             if strip:

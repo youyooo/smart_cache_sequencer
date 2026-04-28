@@ -82,13 +82,7 @@ class CACHE_PT_smart_cache(bpy.types.Panel):
         box.prop(settings, "auto_cache_on_playback")
         box.prop(settings, "persistent_proxy")
 
-        # Init singletons on demand
         manager, renderer, server, prefetch = sc.get_singletons()
-        if not manager and settings.enabled:
-            sc.init_singletons()
-            manager, renderer, server, prefetch = sc.get_singletons()
-            from . import cache_handlers
-            cache_handlers.register_handlers()
 
         # Cache status
         if manager:

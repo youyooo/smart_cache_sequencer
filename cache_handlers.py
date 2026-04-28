@@ -10,7 +10,7 @@ from . import __init__ as sc
 
 
 def _get():
-    return __init__.get_singletons()
+    return sc.get_singletons()
 
 
 @persistent

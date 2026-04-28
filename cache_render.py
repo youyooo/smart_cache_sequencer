@@ -16,7 +16,6 @@ class CacheRenderManager:
         self._is_internal_rendering = False
         self._cancel_flag = False
         self._progress = {'current': 0, 'total': 0, 'strip_name': ''}
-        self._timer = None
 
     @property
     def is_rendering(self):
@@ -96,7 +95,7 @@ class CacheRenderManager:
         original_quality = render.image_settings.quality
         original_res_x = render.resolution_x
         original_res_y = render.resolution_y
-        original_use_sequencer_crop = render.use_crop_to_render_border if hasattr(render, 'use_crop_to_render_border') else False
+        original_use_sequencer = render.use_sequencer
 
         # Save mute state of all strips
         original_mutes = {s.name: s.mute for s in se.sequences_all}
@@ -110,6 +109,7 @@ class CacheRenderManager:
             strip.mute = False
 
             # For L0, also temporarily disable modifiers
+            mod_enabled = {}
             if layer == 0 and hasattr(strip, 'modifiers'):
                 mod_enabled = {m.name: m.enable for m in strip.modifiers}
                 for m in strip.modifiers:
@@ -118,7 +118,8 @@ class CacheRenderManager:
             # Set frame
             scene.frame_set(frame)
 
-            # Configure render output
+            # Configure render output for VSE
+            render.use_sequencer = True
             render.filepath = output_path
             render.image_settings.file_format = 'PNG'
             render.image_settings.color_mode = 'RGBA'
@@ -143,12 +144,13 @@ class CacheRenderManager:
                     s.mute = original_mutes[s.name]
 
             # Restore modifiers
-            if layer == 0 and hasattr(strip, 'modifiers'):
+            if layer == 0 and mod_enabled:
                 for m in strip.modifiers:
                     if m.name in mod_enabled:
                         m.enable = mod_enabled[m.name]
 
             # Restore render settings
+            render.use_sequencer = original_use_sequencer
             render.filepath = original_filepath
             render.image_settings.file_format = original_format
             render.image_settings.color_mode = original_color_mode
