@@ -191,7 +191,7 @@ class CACHE_PT_smart_cache(bpy.types.Panel):
             se = context.scene.sequence_editor
             if se:
                 strip_progress = []
-                for strip in se.sequences_all:
+                for strip in se.sequences:
                     if strip.type not in ('MOVIE', 'IMAGE', 'SCENE'):
                         continue
                     if strip.mute:
@@ -275,7 +275,7 @@ class SMART_CACHE_OT_cache_selected(bpy.types.Operator):
             return {'CANCELLED'}
 
         count = 0
-        for strip in context.selected_sequences:
+        for strip in se.selected_sequences:
             if strip.type not in ('MOVIE', 'IMAGE', 'SCENE'):
                 continue
             if strip.mute:
@@ -329,7 +329,7 @@ class SMART_CACHE_OT_cache_all(bpy.types.Operator):
             return {'CANCELLED'}
 
         count = 0
-        for strip in se.sequences_all:
+        for strip in se.sequences:
             if strip.type not in ('MOVIE', 'IMAGE', 'SCENE'):
                 continue
             if strip.mute:
@@ -460,7 +460,7 @@ class SMART_CACHE_OT_build_proxies(bpy.types.Operator):
         if not se:
             return {'CANCELLED'}
         count = 0
-        for strip in se.sequences_all:
+        for strip in se.sequences:
             if strip.type in ('MOVIE', 'IMAGE'):
                 strip.use_proxy = True
                 strip.proxy.build_25 = True
