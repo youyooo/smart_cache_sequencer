@@ -274,10 +274,10 @@ class SMART_CACHE_OT_cache_selected(bpy.types.Operator):
             self.report({'WARNING'}, "No sequence editor found")
             return {'CANCELLED'}
 
+        # Get selected strips using new Blender 5.x context API
+        selected = getattr(context, 'selected_strips', None) or [s for s in se.strips if s.select]
         count = 0
-        for strip in se.strips:
-            if not strip.select:
-                continue
+        for strip in selected:
             if strip.type not in ('MOVIE', 'IMAGE', 'SCENE'):
                 continue
             if strip.mute:

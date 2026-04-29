@@ -3,7 +3,7 @@
 bl_info = {
     "name": "Smart Cache Sequencer",
     "author": "Smart Cache",
-    "version": (1, 0, 16),
+    "version": (1, 0, 17),
     "blender": (4, 4, 0),
     "location": "Sequencer > Sidebar > Smart Cache",
     "description": "AE-inspired disk caching for VSE strips with layered cache and position-independent hashing",

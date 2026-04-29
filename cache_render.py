@@ -16,6 +16,8 @@ class CacheRenderManager:
         self._is_internal_rendering = False
         self._cancel_flag = False
         self._progress = {'current': 0, 'total': 0, 'strip_name': ''}
+        # Store window reference for context override during timer callbacks
+        self._window = bpy.context.window if bpy.context.window else None
 
     @property
     def is_rendering(self):
@@ -125,8 +127,21 @@ class CacheRenderManager:
             render.image_settings.color_mode = 'RGBA'
             render.image_settings.quality = 90
 
+            # Build context override for timer-based rendering
+            override = {'scene': scene}
+            win = bpy.context.window or self._window
+            if win:
+                override['window'] = win
+                override['screen'] = win.screen
+                for area in win.screen.areas:
+                    if area.type == 'SEQUENCE_EDITOR':
+                        override['area'] = area
+                        override['region'] = area.regions[-1] if area.regions else None
+                        break
+
             # Render single frame
             bpy.ops.render.render(
+                override,
                 animation=False,
                 write_still=True,
                 use_sequencer_scene=True,
@@ -136,6 +151,14 @@ class CacheRenderManager:
             # Record in cache index
             if os.path.exists(output_path):
                 self.cache_manager.record_cached_frame(strip, frame, layer, output_path)
+                print(f"[Smart Cache] Rendered: {os.path.basename(output_path)}")
+            else:
+                print(f"[Smart Cache] WARNING: render claimed success but file missing: {output_path}")
+
+        except Exception as e:
+            print(f"[Smart Cache] Render frame {frame} of {strip_name} FAILED: {e}")
+            import traceback
+            traceback.print_exc()
 
         finally:
             # Restore all strip mute states
