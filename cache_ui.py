@@ -110,7 +110,7 @@ class CACHE_PT_smart_cache(bpy.types.Panel):
 
         # Master toggle
         row = layout.row()
-        row.prop(settings, "enabled", text="", icon='CACHE' if settings.enabled else 'LAYER_USED')
+        row.prop(settings, "enabled", text="", icon='FILE_CACHE' if settings.enabled else 'LAYER_USED')
         row.label(text="Enable Smart Cache")
 
         if not settings.enabled:
