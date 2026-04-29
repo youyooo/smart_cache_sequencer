@@ -233,15 +233,12 @@ class SMART_CACHE_OT_reinit(bpy.types.Operator):
 
     def execute(self, context):
         from . import init_singletons, cache_handlers
-        try:
-            ok = init_singletons(context.scene)
-            if ok:
-                cache_handlers.register_handlers()
-                self.report({'INFO'}, "Smart Cache initialized successfully")
-            else:
-                self.report({'ERROR'}, "Initialization failed, check console")
-        except Exception as e:
-            self.report({'ERROR'}, f"Error: {e}")
+        ok, err = init_singletons(context.scene)
+        if ok:
+            cache_handlers.register_handlers()
+            self.report({'INFO'}, "Smart Cache initialized successfully")
+        else:
+            self.report({'ERROR'}, f"Init failed: {err}")
         return {'FINISHED'}
 
 

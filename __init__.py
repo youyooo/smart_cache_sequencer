@@ -3,7 +3,7 @@
 bl_info = {
     "name": "Smart Cache Sequencer",
     "author": "Smart Cache",
-    "version": (1, 0, 10),
+    "version": (1, 0, 11),
     "blender": (4, 4, 0),
     "location": "Sequencer > Sidebar > Smart Cache",
     "description": "AE-inspired disk caching for VSE strips with layered cache and position-independent hashing",
@@ -92,47 +92,57 @@ def auto_cache_all(scene):
 
 
 def init_singletons(scene):
-    """Initialize cache singletons synchronously."""
+    """Initialize cache singletons synchronously. Returns (success, error_msg)."""
     print("[Smart Cache] Initializing...")
     try:
         settings = scene.smart_cache
         if not settings:
-            print("[Smart Cache] ERROR: No smart_cache settings")
-            return False
+            msg = "No smart_cache settings on scene"
+            print(f"[Smart Cache] ERROR: {msg}")
+            return (False, msg)
 
         cache_dir = get_blend_cache_dir(scene)
         if not cache_dir:
-            print("[Smart Cache] ERROR: Could not resolve cache directory")
-            return False
+            msg = "Could not resolve cache directory"
+            print(f"[Smart Cache] ERROR: {msg}")
+            return (False, msg)
 
         print(f"[Smart Cache] Cache dir: {cache_dir}")
 
         max_size = settings.max_cache_size_gb
+        print(f"[Smart Cache] Max size: {max_size} GB")
 
+        print("[Smart Cache] Creating CacheManager...")
         manager = cm_mod.CacheManager(cache_dir, max_size_gb=max_size)
         manager.ensure_dirs()
-        print(f"[Smart Cache] Manager created")
+        print(f"[Smart Cache] Manager created OK")
 
+        print("[Smart Cache] Creating CacheRenderManager...")
         renderer = cr_mod.CacheRenderManager(manager)
+        print(f"[Smart Cache] Renderer created OK")
+
+        print("[Smart Cache] Creating CachePlaybackController...")
         server = cs_mod.CachePlaybackController(manager)
+        print(f"[Smart Cache] Server created OK")
+
+        print("[Smart Cache] Creating PrefetchManager...")
         prefetch = cs_mod.PrefetchManager(manager, renderer, settings.prefetch_lookahead)
+        print(f"[Smart Cache] Prefetch created OK")
 
         cache_core.set_singletons(manager, renderer, server, prefetch)
         print(f"[Smart Cache] Singletons set")
 
-        # Apply system cache settings
         apply_system_cache_settings(scene)
-
-        # Auto cache all strips
         auto_cache_all(scene)
 
         print(f"[Smart Cache] Initialized OK: {cache_dir}")
-        return True
+        return (True, "")
 
     except Exception as e:
         print(f"[Smart Cache] INIT FAILED: {e}")
-        traceback.print_exc()
-        return False
+        tb = traceback.format_exc()
+        print(tb)
+        return (False, f"{e}")
 
 
 def cleanup_singletons(context):
@@ -160,7 +170,7 @@ def _on_enabled_change(self, context):
 
     if settings.enabled:
         print("[Smart Cache] User enabled plugin")
-        ok = init_singletons(context.scene)
+        ok, err = init_singletons(context.scene)
         if ok:
             cache_handlers.register_handlers()
     else:

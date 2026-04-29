@@ -27,16 +27,19 @@ def _serialize_modifier(mod):
         data['bright'] = mod.bright
         data['contrast'] = mod.contrast
     elif mod.type == 'COLOR_BALANCE':
-        cb = mod.color_balance
-        data['method'] = cb.correction_method
-        if cb.correction_method == 'OFFSET_POWER_SLOPE':
-            data['lift'] = tuple(cb.lift)
-            data['gamma'] = tuple(cb.gamma)
-            data['gain'] = tuple(cb.gain)
-        else:
-            data['offset'] = tuple(cb.offset)
-            data['power'] = tuple(cb.power)
-            data['slope'] = tuple(cb.slope)
+        try:
+            cb = mod.color_balance
+            data['method'] = cb.correction_method
+            if cb.correction_method == 'OFFSET_POWER_SLOPE':
+                data['lift'] = tuple(cb.lift)
+                data['gamma'] = tuple(cb.gamma)
+                data['gain'] = tuple(cb.gain)
+            else:
+                data['offset'] = tuple(cb.offset)
+                data['power'] = tuple(cb.power)
+                data['slope'] = tuple(cb.slope)
+        except Exception:
+            data['color_balance'] = 'unknown'
     elif mod.type == 'CURVES':
         data['curves'] = _curve_mapping_data(mod.curve_mapping)
     elif mod.type == 'HUE_CORRECT':
