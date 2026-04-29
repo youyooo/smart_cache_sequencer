@@ -117,8 +117,9 @@ class CacheRenderManager:
                 for m in strip.modifiers:
                     m.enable = False
 
-            # Set frame
+            # Set frame and force depsgraph update so mute changes take effect
             scene.frame_set(frame)
+            bpy.context.view_layer.update()
 
             # Configure render output for VSE
             render.use_sequencer = True
@@ -127,7 +128,8 @@ class CacheRenderManager:
             render.image_settings.color_mode = 'RGBA'
             render.image_settings.quality = 90
 
-            # Build context override for timer-based rendering
+            # Render single frame via VSE OpenGL pipeline (5.1+ sequencer=True)
+            # This is more reliable than render.render for timer-based VSE rendering
             override = {'scene': scene}
             win = bpy.context.window or self._window
             if win:
@@ -139,14 +141,23 @@ class CacheRenderManager:
                         override['region'] = area.regions[-1] if area.regions else None
                         break
 
-            # Render single frame
-            bpy.ops.render.render(
-                override,
-                animation=False,
-                write_still=True,
-                use_sequencer_scene=True,
-                scene=scene.name,
-            )
+            try:
+                bpy.ops.render.opengl(
+                    override,
+                    animation=False,
+                    sequencer=True,
+                    write_still=True,
+                    view_context=False,
+                )
+            except Exception:
+                # Fallback: try full render pipeline
+                bpy.ops.render.render(
+                    override,
+                    animation=False,
+                    write_still=True,
+                    use_sequencer_scene=True,
+                    scene=scene.name,
+                )
 
             # Record in cache index
             if os.path.exists(output_path):
