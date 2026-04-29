@@ -92,6 +92,19 @@ class CACHE_PT_smart_cache(bpy.types.Panel):
     bl_category = "Smart Cache"
 
     def draw(self, context):
+        try:
+            self._draw_safe(context)
+        except Exception as e:
+            layout = self.layout
+            box = layout.box()
+            box.label(text="Smart Cache ERROR", icon='ERROR')
+            box.label(text=str(e))
+            tb = traceback.format_exc()
+            for line in tb.split('\n')[-6:]:
+                if line.strip():
+                    box.label(text=line[:80])
+
+    def _draw_safe(self, context):
         layout = self.layout
         settings = context.scene.smart_cache
 
@@ -101,7 +114,7 @@ class CACHE_PT_smart_cache(bpy.types.Panel):
         row.label(text="Enable Smart Cache")
 
         if not settings.enabled:
-            layout.label(text="Turn on to see cache controls")
+            layout.label(text="Enable to see cache controls")
             return
 
         # === ENABLED: show controls ===
@@ -110,8 +123,8 @@ class CACHE_PT_smart_cache(bpy.types.Panel):
         # Not initialized yet
         if not manager:
             box = layout.box()
-            box.label(text="Cache: Not Initialized", icon='INFO')
-            box.label(text="Click Re-Initialize or Cache All to start")
+            box.label(text="Status: Not Initialized", icon='INFO')
+            box.label(text="Click Re-Initialize to start")
             row = box.row()
             row.operator("smart_cache.reinit", text="Re-Initialize", icon='FILE_REFRESH')
             return
@@ -173,22 +186,42 @@ class CACHE_PT_smart_cache(bpy.types.Panel):
         box.prop(settings, "auto_cache_on_playback")
         box.prop(settings, "persistent_proxy")
 
-        # Per-strip status
+        # Per-strip cache progress
         try:
-            if manager.strip_hashes:
-                box = layout.box()
-                box.label(text="Cached Strips", icon='SEQUENCE')
-                for strip_name in manager.strip_hashes:
-                    has_l0 = manager.strip_has_cache(strip_name, 0)
-                    has_l1 = manager.strip_has_cache(strip_name, 1)
-                    row = box.row()
-                    row.label(text=f"  {strip_name}")
-                    sub = row.row(align=True)
-                    sub.scale_x = 0.6
-                    if has_l0:
-                        sub.label(text="L0", icon='CHECKBOX_HLT')
-                    if has_l1:
-                        sub.label(text="L1", icon='CHECKBOX_HLT')
+            se = context.scene.sequence_editor
+            if se:
+                strip_progress = []
+                for strip in se.sequences_all:
+                    if strip.type not in ('MOVIE', 'IMAGE', 'SCENE'):
+                        continue
+                    if strip.mute:
+                        continue
+                    total = strip.frame_final_end - strip.frame_final_start + 1
+                    if total <= 0:
+                        continue
+                    cached_l0 = len(manager.get_cached_frames(strip.name, 0))
+                    has_l1 = manager.strip_has_cache(strip.name, 1)
+                    strip_progress.append((strip.name, cached_l0, total, has_l1))
+
+                if strip_progress:
+                    box = layout.box()
+                    box.label(text="Strip Cache Progress", icon='SEQUENCE')
+                    for name, cached, total, has_l1 in strip_progress:
+                        pct = cached / max(total, 1)
+                        row = box.row()
+                        row.label(text=f"  {name}")
+                        row.label(text=f"{cached}/{total}")
+                        bar = box.row()
+                        bar.progress(factor=pct)
+                        icons = []
+                        if cached > 0:
+                            icons.append("L0")
+                        if has_l1:
+                            icons.append("L1")
+                        if icons:
+                            bar.label(text=" | ".join(icons))
+                        else:
+                            bar.label(text="---")
         except Exception:
             pass
 
@@ -201,8 +234,12 @@ class SMART_CACHE_OT_reinit(bpy.types.Operator):
     def execute(self, context):
         from . import init_singletons, cache_handlers
         try:
-            init_singletons(context.scene)
-            self.report({'INFO'}, "Smart Cache initializing... check console for details")
+            ok = init_singletons(context.scene)
+            if ok:
+                cache_handlers.register_handlers()
+                self.report({'INFO'}, "Smart Cache initialized successfully")
+            else:
+                self.report({'ERROR'}, "Initialization failed, check console")
         except Exception as e:
             self.report({'ERROR'}, f"Error: {e}")
         return {'FINISHED'}
@@ -221,9 +258,10 @@ class SMART_CACHE_OT_cache_selected(bpy.types.Operator):
             if settings.enabled:
                 from . import init_singletons, cache_handlers
                 try:
-                    init_singletons(context.scene)
-                    cache_handlers.register_handlers()
-                    manager, renderer, server, prefetch = _get_singletons_safe()
+                    ok = init_singletons(context.scene)
+                    if ok:
+                        cache_handlers.register_handlers()
+                        manager, renderer, server, prefetch = _get_singletons_safe()
                 except Exception as e:
                     self.report({'ERROR'}, f"Init failed: {e}")
                     return {'CANCELLED'}
@@ -274,9 +312,10 @@ class SMART_CACHE_OT_cache_all(bpy.types.Operator):
             if settings.enabled:
                 from . import init_singletons, cache_handlers
                 try:
-                    init_singletons(context.scene)
-                    cache_handlers.register_handlers()
-                    manager, renderer, server, prefetch = _get_singletons_safe()
+                    ok = init_singletons(context.scene)
+                    if ok:
+                        cache_handlers.register_handlers()
+                        manager, renderer, server, prefetch = _get_singletons_safe()
                 except Exception as e:
                     self.report({'ERROR'}, f"Init failed: {e}")
                     return {'CANCELLED'}
