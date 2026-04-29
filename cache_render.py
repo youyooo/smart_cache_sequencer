@@ -98,13 +98,13 @@ class CacheRenderManager:
         original_use_sequencer = render.use_sequencer
 
         # Save mute state of all strips
-        original_mutes = {s.name: s.mute for s in se.sequences}
+        original_mutes = {s.name: s.mute for s in se.strips}
 
         try:
             self._is_internal_rendering = True
 
             # Mute all strips except the target
-            for s in se.sequences:
+            for s in se.strips:
                 s.mute = True
             strip.mute = False
 
@@ -139,7 +139,7 @@ class CacheRenderManager:
 
         finally:
             # Restore all strip mute states
-            for s in se.sequences:
+            for s in se.strips:
                 if s.name in original_mutes:
                     s.mute = original_mutes[s.name]
 
@@ -174,7 +174,7 @@ class CacheRenderManager:
 
     @staticmethod
     def _find_strip(se, name: str):
-        for s in se.sequences:
+        for s in se.strips:
             if s.name == name:
                 return s
         return None

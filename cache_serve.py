@@ -68,7 +68,7 @@ class CachePlaybackController:
             proxy_name = f"{CACHE_PREFIX}{strip_name}"
 
             try:
-                proxy = se.sequences.new_image(
+                proxy = se.strips.new_image(
                     name=proxy_name,
                     filepath=first_file,
                     channel=proxy_channel,
@@ -101,9 +101,9 @@ class CachePlaybackController:
 
         for strip_name, proxies in self.proxy_strips.items():
             for proxy in proxies:
-                if proxy.name in se.sequences:
+                if proxy.name in se.strips:
                     try:
-                        se.sequences.remove(proxy)
+                        se.strips.remove(proxy)
                     except RuntimeError:
                         pass
 
@@ -123,7 +123,7 @@ class CachePlaybackController:
 
     @staticmethod
     def _find_strip(se, name: str):
-        for s in se.sequences:
+        for s in se.strips:
             if s.name == name:
                 return s
         return None
@@ -151,7 +151,7 @@ class PrefetchManager:
         if not se:
             return
 
-        for strip in se.sequences:
+        for strip in se.strips:
             if strip.mute or strip.lock:
                 continue
             if strip.type not in CACHEABLE_TYPES:

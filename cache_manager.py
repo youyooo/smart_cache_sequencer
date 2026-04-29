@@ -210,7 +210,7 @@ class CacheManager:
         scene = bpy.context.scene
         if not scene.sequence_editor:
             return None
-        for s in scene.sequence_editor.sequences:
+        for s in scene.sequence_editor.strips:
             if s.name == name:
                 return s
         return None

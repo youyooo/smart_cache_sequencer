@@ -57,7 +57,7 @@ def on_depsgraph_update(scene, depsgraph):
     if not se:
         return
 
-    for strip in se.sequences:
+    for strip in se.strips:
         if strip.type not in ('MOVIE', 'IMAGE', 'SCENE'):
             continue
         if strip.name not in manager.strip_hashes:

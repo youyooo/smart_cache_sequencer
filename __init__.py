@@ -3,7 +3,7 @@
 bl_info = {
     "name": "Smart Cache Sequencer",
     "author": "Smart Cache",
-    "version": (1, 0, 14),
+    "version": (1, 0, 15),
     "blender": (4, 4, 0),
     "location": "Sequencer > Sidebar > Smart Cache",
     "description": "AE-inspired disk caching for VSE strips with layered cache and position-independent hashing",
@@ -70,7 +70,7 @@ def auto_cache_all(scene):
     manager.ensure_dirs()
 
     count = 0
-    for strip in se.sequences:
+    for strip in se.strips:
         if strip.type not in ('MOVIE', 'IMAGE', 'SCENE'):
             continue
         if strip.mute:
