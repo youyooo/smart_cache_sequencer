@@ -79,8 +79,8 @@ def strip_base_hash(strip):
     if hasattr(strip, 'crop'):
         crop = strip.crop
         data['crop'] = {
-            'top': crop.top, 'bottom': crop.bottom,
-            'left': crop.left, 'right': crop.right,
+            'top': crop.max_y, 'bottom': crop.min_y,
+            'left': crop.min_x, 'right': crop.max_x,
         }
 
     # Transform (affects pixel output, not just position)
