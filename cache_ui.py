@@ -255,7 +255,7 @@ class SMART_CACHE_OT_cache_selected(bpy.types.Operator):
             if settings.enabled:
                 from . import init_singletons, cache_handlers
                 try:
-                    ok = init_singletons(context.scene)
+                    ok, err = init_singletons(context.scene)
                     if ok:
                         cache_handlers.register_handlers()
                         manager, renderer, server, prefetch = _get_singletons_safe()
@@ -275,7 +275,9 @@ class SMART_CACHE_OT_cache_selected(bpy.types.Operator):
             return {'CANCELLED'}
 
         count = 0
-        for strip in se.selected_sequences:
+        for strip in se.sequences:
+            if not strip.select:
+                continue
             if strip.type not in ('MOVIE', 'IMAGE', 'SCENE'):
                 continue
             if strip.mute:
@@ -309,7 +311,7 @@ class SMART_CACHE_OT_cache_all(bpy.types.Operator):
             if settings.enabled:
                 from . import init_singletons, cache_handlers
                 try:
-                    ok = init_singletons(context.scene)
+                    ok, err = init_singletons(context.scene)
                     if ok:
                         cache_handlers.register_handlers()
                         manager, renderer, server, prefetch = _get_singletons_safe()
