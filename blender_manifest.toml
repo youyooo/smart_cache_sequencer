@@ -2,7 +2,7 @@ schema_version = "1.0.0"
 
 id = "smart_cache_sequencer"
 name = "Smart Cache Sequencer"
-version = "1.0.7"
+version = "1.0.8"
 tagline = "AE-inspired disk caching for VSE strips"
 maintainer = "Smart Cache"
 type = "add-on"

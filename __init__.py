@@ -3,7 +3,7 @@
 bl_info = {
     "name": "Smart Cache Sequencer",
     "author": "Smart Cache",
-    "version": (1, 0, 7),
+    "version": (1, 0, 8),
     "blender": (4, 4, 0),
     "location": "Sequencer > Sidebar > Smart Cache",
     "description": "AE-inspired disk caching for VSE strips with layered cache and position-independent hashing",
@@ -11,6 +11,9 @@ bl_info = {
 }
 
 import bpy
+import traceback
+import os
+import tempfile
 
 from . import cache_manager as cm_mod
 from . import cache_render as cr_mod
@@ -26,8 +29,6 @@ def get_singletons():
 
 def get_blend_cache_dir(scene):
     """Resolve cache directory relative to the .blend file."""
-    import os
-    import tempfile
     settings = scene.smart_cache
     if not settings:
         return None
@@ -39,6 +40,19 @@ def get_blend_cache_dir(scene):
         base = os.path.dirname(blend_path)
         return os.path.normpath(os.path.join(base, raw_path[2:]))
     return raw_path
+
+
+def apply_system_cache_settings(scene):
+    """Apply our cache settings to Blender's system VSE cache."""
+    settings = scene.smart_cache
+    se = scene.sequence_editor
+    if not se:
+        return
+    try:
+        se.cache_memory_limit = settings.memory_cache_limit_mb
+        print(f"[Smart Cache] Set memory cache limit to {settings.memory_cache_limit_mb} MB")
+    except Exception as e:
+        print(f"[Smart Cache] Could not set memory cache limit: {e}")
 
 
 def auto_cache_all(scene):
@@ -77,37 +91,48 @@ def auto_cache_all(scene):
         print("[Smart Cache] No cacheable strips found")
 
 
-def _do_init(scene):
-    """Deferred init via timer — actually creates singletons."""
-    settings = scene.smart_cache
-    if not settings:
-        return False
-
-    cache_dir = get_blend_cache_dir(scene)
-    if not cache_dir:
-        return False
-
-    max_size = settings.max_cache_size_gb
-
-    manager = cm_mod.CacheManager(cache_dir, max_size_gb=max_size)
-    manager.ensure_dirs()
-
-    renderer = cr_mod.CacheRenderManager(manager)
-    server = cs_mod.CachePlaybackController(manager)
-    prefetch = cs_mod.PrefetchManager(manager, renderer, settings.prefetch_lookahead)
-
-    cache_core.set_singletons(manager, renderer, server, prefetch)
-
-    print(f"[Smart Cache] Initialized: {cache_dir}")
-
-    auto_cache_all(scene)
-    return False  # don't repeat
-
-
 def init_singletons(scene):
-    """Initialize cache singletons — deferred via timer to avoid blocking UI."""
-    print(f"[Smart Cache] Initializing...")
-    bpy.app.timers.register(lambda: _do_init(scene), first_interval=0.1)
+    """Initialize cache singletons synchronously."""
+    print("[Smart Cache] Initializing...")
+    try:
+        settings = scene.smart_cache
+        if not settings:
+            print("[Smart Cache] ERROR: No smart_cache settings")
+            return False
+
+        cache_dir = get_blend_cache_dir(scene)
+        if not cache_dir:
+            print("[Smart Cache] ERROR: Could not resolve cache directory")
+            return False
+
+        print(f"[Smart Cache] Cache dir: {cache_dir}")
+
+        max_size = settings.max_cache_size_gb
+
+        manager = cm_mod.CacheManager(cache_dir, max_size_gb=max_size)
+        manager.ensure_dirs()
+        print(f"[Smart Cache] Manager created")
+
+        renderer = cr_mod.CacheRenderManager(manager)
+        server = cs_mod.CachePlaybackController(manager)
+        prefetch = cs_mod.PrefetchManager(manager, renderer, settings.prefetch_lookahead)
+
+        cache_core.set_singletons(manager, renderer, server, prefetch)
+        print(f"[Smart Cache] Singletons set")
+
+        # Apply system cache settings
+        apply_system_cache_settings(scene)
+
+        # Auto cache all strips
+        auto_cache_all(scene)
+
+        print(f"[Smart Cache] Initialized OK: {cache_dir}")
+        return True
+
+    except Exception as e:
+        print(f"[Smart Cache] INIT FAILED: {e}")
+        traceback.print_exc()
+        return False
 
 
 def cleanup_singletons(context):
@@ -134,9 +159,12 @@ def _on_enabled_change(self, context):
         return
 
     if settings.enabled:
-        init_singletons(context.scene)
-        cache_handlers.register_handlers()
+        print("[Smart Cache] User enabled plugin")
+        ok = init_singletons(context.scene)
+        if ok:
+            cache_handlers.register_handlers()
     else:
+        print("[Smart Cache] User disabled plugin")
         cleanup_singletons(context)
         cache_handlers.unregister_handlers()
 
@@ -147,6 +175,7 @@ def register():
         type=cache_ui.SmartCacheSettings,
         update=_on_enabled_change,
     )
+    print("[Smart Cache] Plugin registered")
 
 
 def unregister():
@@ -155,6 +184,7 @@ def unregister():
     cache_ui.unregister()
     if hasattr(bpy.types.Scene, 'smart_cache'):
         del bpy.types.Scene.smart_cache
+    print("[Smart Cache] Plugin unregistered")
 
 
 if __name__ == "__main__":
