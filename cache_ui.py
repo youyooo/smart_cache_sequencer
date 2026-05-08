@@ -155,7 +155,16 @@ def _get_singletons_safe():
     try:
         return cache_core.get_singletons()
     except Exception:
-        return (None, None, None, None)
+        return (None, None, None, None, None)
+
+
+def _get_track_manager_safe():
+    """Convenience accessor — returns TrackManager ref or None."""
+    try:
+        _, _, _, _, tm = cache_core.get_singletons()
+        return tm
+    except Exception:
+        return None
 
 
 class CACHE_PT_smart_cache(bpy.types.Panel):
@@ -192,7 +201,7 @@ class CACHE_PT_smart_cache(bpy.types.Panel):
             return
 
         # === ENABLED: show controls ===
-        manager, renderer, server, prefetch = _get_singletons_safe()
+        manager, renderer, server, prefetch, _track_mgr = _get_singletons_safe()
 
         # Not initialized yet
         if not manager:
@@ -263,6 +272,9 @@ class CACHE_PT_smart_cache(bpy.types.Panel):
             row = box.row()
             label = "Disable Playback" if server.is_active else "Enable Playback"
             row.operator("smart_cache.toggle_cache_playback", text=label)
+
+        row = box.row(align=True)
+        row.operator("smart_cache.auto_pair_audio", text="Auto Pair Audio Tracks", icon='LINKED')
 
         row = box.row(align=True)
         row.operator("smart_cache.purge_stale", text="Purge Stale", icon='TRASH')
@@ -432,7 +444,7 @@ class SMART_CACHE_OT_cache_selected(bpy.types.Operator):
 
     def execute(self, context):
         settings = context.scene.smart_cache
-        manager, renderer, server, prefetch = _get_singletons_safe()
+        manager, renderer, server, prefetch, _track_mgr = _get_singletons_safe()
 
         if not manager or not renderer:
             if settings.enabled:
@@ -441,7 +453,7 @@ class SMART_CACHE_OT_cache_selected(bpy.types.Operator):
                     ok, err = init_singletons(context.scene)
                     if ok:
                         cache_handlers.register_handlers()
-                        manager, renderer, server, prefetch = _get_singletons_safe()
+                        manager, renderer, server, prefetch, _track_mgr = _get_singletons_safe()
                 except Exception as e:
                     self.report({'ERROR'}, f"Init failed: {e}")
                     return {'CANCELLED'}
@@ -488,7 +500,7 @@ class SMART_CACHE_OT_cache_all(bpy.types.Operator):
 
     def execute(self, context):
         settings = context.scene.smart_cache
-        manager, renderer, server, prefetch = _get_singletons_safe()
+        manager, renderer, server, prefetch, _track_mgr = _get_singletons_safe()
 
         if not manager or not renderer:
             if settings.enabled:
@@ -497,7 +509,7 @@ class SMART_CACHE_OT_cache_all(bpy.types.Operator):
                     ok, err = init_singletons(context.scene)
                     if ok:
                         cache_handlers.register_handlers()
-                        manager, renderer, server, prefetch = _get_singletons_safe()
+                        manager, renderer, server, prefetch, _track_mgr = _get_singletons_safe()
                 except Exception as e:
                     self.report({'ERROR'}, f"Init failed: {e}")
                     return {'CANCELLED'}
@@ -541,7 +553,7 @@ class SMART_CACHE_OT_cancel_render(bpy.types.Operator):
     bl_description = "Stop background cache rendering"
 
     def execute(self, context):
-        manager, renderer, server, prefetch = _get_singletons_safe()
+        manager, renderer, server, prefetch, _track_mgr = _get_singletons_safe()
         if renderer:
             renderer.cancel_render()
         self.report({'INFO'}, "Rendering cancelled")
@@ -554,7 +566,7 @@ class SMART_CACHE_OT_toggle_cache_playback(bpy.types.Operator):
     bl_description = "Enable/disable proxy strip mode for cached playback"
 
     def execute(self, context):
-        manager, renderer, server, prefetch = _get_singletons_safe()
+        manager, renderer, server, prefetch, _track_mgr = _get_singletons_safe()
         if not server:
             self.report({'WARNING'}, "Smart Cache not initialized")
             return {'CANCELLED'}
@@ -576,7 +588,7 @@ class SMART_CACHE_OT_purge_cache(bpy.types.Operator):
         return context.window_manager.invoke_confirm(self, event)
 
     def execute(self, context):
-        manager, renderer, server, prefetch = _get_singletons_safe()
+        manager, renderer, server, prefetch, _track_mgr = _get_singletons_safe()
         if server and server.is_active:
             server.disable_cache_playback(context)
         if manager:
@@ -591,7 +603,7 @@ class SMART_CACHE_OT_purge_stale(bpy.types.Operator):
     bl_description = "Delete cache for strips that no longer exist"
 
     def execute(self, context):
-        manager, renderer, server, prefetch = _get_singletons_safe()
+        manager, renderer, server, prefetch, _track_mgr = _get_singletons_safe()
         if manager:
             manager.purge_stale()
         self.report({'INFO'}, "Stale cache purged")
@@ -627,7 +639,7 @@ class SMART_CACHE_OT_open_cache_dir(bpy.types.Operator):
     bl_description = "Open the cache folder in file explorer"
 
     def execute(self, context):
-        manager, renderer, server, prefetch = _get_singletons_safe()
+        manager, renderer, server, prefetch, _track_mgr = _get_singletons_safe()
         if manager:
             cache_dir = manager.base_dir
             if os.path.exists(cache_dir):
@@ -678,7 +690,7 @@ class SMART_CACHE_OT_clear_cache_memory(bpy.types.Operator):
             bpy.ops.sequencer.clear_proxy_cache()
         except Exception:
             pass
-        manager, renderer, server, prefetch = _get_singletons_safe()
+        manager, renderer, server, prefetch, _track_mgr = _get_singletons_safe()
         if server and server.is_active:
             server.disable_cache_playback(context)
         if manager:
@@ -706,6 +718,34 @@ class SMART_CACHE_OT_free_memory(bpy.types.Operator):
         return {'FINISHED'}
 
 
+class SMART_CACHE_OT_auto_pair_audio(bpy.types.Operator):
+    bl_idname = "smart_cache.auto_pair_audio"
+    bl_label = "Auto Pair Audio Tracks"
+    bl_description = "Move audio strips to channels directly below their paired video strips"
+
+    def execute(self, context):
+        track_mgr = _get_track_manager_safe()
+        if not track_mgr:
+            self.report({'WARNING'}, "Smart Cache not initialized")
+            return {'CANCELLED'}
+
+        se = context.scene.sequence_editor
+        if not se:
+            self.report({'WARNING'}, "No sequence editor found")
+            return {'CANCELLED'}
+
+        paired = track_mgr.auto_pair_strips(context)
+        if paired:
+            self.report({'INFO'}, f"Auto-paired {paired} audio track(s)")
+            try:
+                se.channels.update_tag()
+            except Exception:
+                pass
+        else:
+            self.report({'INFO'}, "No audio strips needed re-pairing")
+        return {'FINISHED'}
+
+
 classes = [
     SmartCacheSettings,
     CACHE_PT_smart_cache,
@@ -721,6 +761,7 @@ classes = [
     SMART_CACHE_OT_build_proxies,
     SMART_CACHE_OT_clear_cache_memory,
     SMART_CACHE_OT_free_memory,
+    SMART_CACHE_OT_auto_pair_audio,
 ]
 
 

@@ -23,6 +23,7 @@ from . import cache_handlers
 from . import cache_ui
 from . import cache_core
 from . import cache_waveform
+from . import cache_track as ct_mod
 from . import cache_system
 
 
@@ -77,7 +78,7 @@ def auto_cache_all(scene):
         return
 
     settings = scene.smart_cache
-    manager, renderer, server, prefetch = get_singletons()
+    manager, renderer, server, prefetch, _track_mgr = get_singletons()
     if not manager or not renderer:
         return
 
@@ -158,7 +159,11 @@ def init_singletons(scene):
         )
         print(f"[Smart Cache] Prefetch created OK")
 
-        cache_core.set_singletons(manager, renderer, server, prefetch)
+        print("[Smart Cache] Creating TrackManager...")
+        track_mgr = ct_mod.TrackManager()
+        print(f"[Smart Cache] TrackManager created OK")
+
+        cache_core.set_singletons(manager, renderer, server, prefetch, track_mgr)
         print(f"[Smart Cache] Singletons set")
 
         cache_system.takeover_system_cache(scene)
@@ -192,7 +197,7 @@ def cleanup_singletons(context):
 
     Safe to call with None context (disable_cache_playback will be skipped).
     """
-    mgr, renderer, server, prefetch = cache_core.get_singletons()
+    mgr, renderer, server, prefetch, track_mgr = cache_core.get_singletons()
 
     if renderer:
         renderer.cancel_render()

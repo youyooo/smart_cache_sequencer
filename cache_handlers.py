@@ -19,7 +19,7 @@ def on_frame_change_pre(scene):
     if not settings or not settings.enabled:
         return
 
-    manager, renderer, server, prefetch = _get()
+    manager, renderer, server, prefetch, track_manager = _get()
     if not manager or not renderer:
         return
 
@@ -41,6 +41,12 @@ def on_frame_change_pre(scene):
         if scene.is_animation_playing:
             prefetch.on_playhead_move(frame, scene)
 
+    # Auto-pair new audio strips when the timeline structure changes
+    if track_manager:
+        context = bpy.context
+        if context and getattr(context, 'scene', None) is scene:
+            track_manager.check_and_auto_pair(context)
+
 
 @persistent
 def on_depsgraph_update(scene, depsgraph):
@@ -49,7 +55,7 @@ def on_depsgraph_update(scene, depsgraph):
     if not settings or not settings.enabled:
         return
 
-    manager, renderer, server, prefetch = _get()
+    manager, renderer, server, prefetch, track_manager = _get()
     if not manager:
         return
 
@@ -81,7 +87,7 @@ def on_save_pre(dummy):
     settings = getattr(scene, 'smart_cache', None)
     if not settings:
         return
-    manager, _, _, prefetch = _get()
+    manager, _, _, prefetch, _ = _get()
     if manager:
         manager._save_index()
     if prefetch:
@@ -94,7 +100,7 @@ def on_load_post(dummy):
     settings = getattr(scene, 'smart_cache', None)
     if not settings:
         return
-    manager, _, _, prefetch = _get()
+    manager, _, _, prefetch, _ = _get()
     if manager:
         manager._load_index()
     if prefetch:
@@ -106,7 +112,7 @@ def on_render_pre(scene):
     settings = getattr(scene, 'smart_cache', None)
     if not settings:
         return
-    _, _, server, _ = _get()
+    _, _, server, _, _ = _get()
     if server and server.is_active:
         server.disable_for_render(scene)
 
@@ -122,7 +128,7 @@ def _idle_timer():
     if not settings or not settings.enabled:
         return 2.0
 
-    _, _, _, prefetch = _get()
+    _, _, _, prefetch, _ = _get()
     if prefetch:
         prefetch.on_idle(scene)
 
