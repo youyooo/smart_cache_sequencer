@@ -59,6 +59,22 @@ class SmartCacheSettings(bpy.types.PropertyGroup):
         description="Restore cache state automatically when reopening a project",
         default=True,
     )
+    audio_aware: BoolProperty(
+        name="Audio-Aware Caching",
+        description="Prioritize frames with audio content for caching",
+        default=True,
+    )
+    audio_threshold_db: IntProperty(
+        name="Audio Threshold (dB)",
+        description="Audio level threshold in dB below which frames are treated as silent",
+        default=-30,
+        min=-60, max=0,
+    )
+    idle_skip_silence: BoolProperty(
+        name="Skip Silence on Idle",
+        description="Skip rendering frames without audio during idle background rendering",
+        default=True,
+    )
     cache_quality: IntProperty(
         name="Cache Quality",
         description="PNG quality for cached frames",
@@ -287,6 +303,15 @@ class CACHE_PT_smart_cache(bpy.types.Panel):
         box.prop(settings, "cache_directory")
         box.prop(settings, "prefetch_lookahead")
         box.prop(settings, "prefetch_strategy")
+        try:
+            box.separator()
+            box.label(text="Audio-Aware Caching", icon='PLAY_SOUND')
+            box.prop(settings, "audio_aware")
+            if settings.audio_aware:
+                box.prop(settings, "audio_threshold_db")
+                box.prop(settings, "idle_skip_silence")
+        except Exception:
+            pass
         box.prop(settings, "idle_rendering")
         box.prop(settings, "session_recovery")
         box.prop(settings, "auto_cache_on_playback")

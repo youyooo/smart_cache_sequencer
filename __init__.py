@@ -152,6 +152,9 @@ def init_singletons(scene):
             strategy=settings.prefetch_strategy,
             idle_enabled=settings.idle_rendering,
             session_recovery=settings.session_recovery,
+            audio_aware=settings.audio_aware,
+            audio_threshold_db=settings.audio_threshold_db,
+            idle_skip_silence=settings.idle_skip_silence,
         )
         print(f"[Smart Cache] Prefetch created OK")
 

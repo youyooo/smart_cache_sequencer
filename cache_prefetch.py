@@ -29,17 +29,28 @@ class PrefetchManager:
       - Playhead Prefetch: Queue frames N frames ahead of current position
       - Idle Rendering: Background fill of uncached frames when renderer is idle
       - Session Recovery: Auto-restore cache state on project load
+
+    Audio-aware caching (1.1.0):
+      - ``audio_aware``: enable/disable audio-aware priority
+      - ``audio_threshold_db``: dB threshold below which frames are silent
+      - ``idle_skip_silence``: skip silent frames during idle rendering
     """
 
     def __init__(self, cache_manager, cache_render,
                  lookahead=30, strategy='balanced',
-                 idle_enabled=True, session_recovery=True):
+                 idle_enabled=True, session_recovery=True,
+                 audio_aware=True, audio_threshold_db=-30.0,
+                 idle_skip_silence=True):
         self.cache_manager = cache_manager
         self.cache_render = cache_render
         self.lookahead = lookahead
         self.strategy = strategy           # 'conservative', 'balanced', 'aggressive'
         self.idle_enabled = idle_enabled
         self.session_recovery = session_recovery
+        # Audio-aware caching (1.1.0)
+        self.audio_aware = audio_aware
+        self.audio_threshold_db = audio_threshold_db
+        self.idle_skip_silence = idle_skip_silence
         self._last_frame = -1
         self._session_id = str(time.time())
 
@@ -98,7 +109,11 @@ class PrefetchManager:
         queued = 0
         for strip in active_strips:
             end = strip.frame_final_end
-            lookahead_end = min(current_frame + effective_lookahead, end)
+            # Audio-aware lookahead: extra 5 frames for high-priority strips
+            strip_lookahead = effective_lookahead
+            if self.audio_aware and _audio_priority(strip) == 0:
+                strip_lookahead = effective_lookahead + 5
+            lookahead_end = min(current_frame + strip_lookahead, end)
             for frame in range(current_frame + 1, lookahead_end + 1):
                 for layer in layers:
                     if not self.cache_manager.frame_exists(strip, frame, layer):
@@ -181,6 +196,9 @@ class PrefetchManager:
             for frame in range(s, e + 1):
                 if total_queued >= batch_limit:
                     break
+                # Skip silent frames when idle_skip_silence is enabled
+                if self.idle_skip_silence and self._is_silent_frame(strip, frame):
+                    continue
                 if not self.cache_manager.frame_exists(strip, frame, 0):
                     self.cache_render.queue_frame(strip, frame, 0)
                     total_queued += 1
@@ -308,7 +326,9 @@ class PrefetchManager:
     # ── Configuration Updates ────────────────────────────────────────
 
     def update_config(self, *, lookahead=None, strategy=None,
-                      idle_enabled=None, session_recovery=None):
+                      idle_enabled=None, session_recovery=None,
+                      audio_aware=None, audio_threshold_db=None,
+                      idle_skip_silence=None):
         """Update prefetch configuration at runtime."""
         if lookahead is not None:
             self.lookahead = lookahead
@@ -318,6 +338,12 @@ class PrefetchManager:
             self.idle_enabled = idle_enabled
         if session_recovery is not None:
             self.session_recovery = session_recovery
+        if audio_aware is not None:
+            self.audio_aware = audio_aware
+        if audio_threshold_db is not None:
+            self.audio_threshold_db = audio_threshold_db
+        if idle_skip_silence is not None:
+            self.idle_skip_silence = idle_skip_silence
 
     # ── Internals ────────────────────────────────────────────────────
 
@@ -330,11 +356,35 @@ class PrefetchManager:
         else:  # balanced
             return int(self.lookahead * 1.5)
 
+    def _is_silent_frame(self, strip, frame: int) -> bool:
+        """Return True if the given frame is considered silent.
+
+        Preliminary implementation: strips without audio are always silent,
+        strips with audio are always treated as voiced.
+        Future enhancement: use actual audio level data to classify frames
+        against ``audio_threshold_db``.
+        """
+        if not self.audio_aware:
+            return False
+        # Audio-only strips always have content
+        if strip.type == 'SOUND':
+            return False
+        # Strips with an audio pointer have content throughout
+        if hasattr(strip, 'audio') and strip.audio is not None:
+            return False
+        return True
+
 
 # ── Module-level helpers ────────────────────────────────────────────
 
 def _audio_priority(strip) -> int:
-    """Return 0 if strip has an audio track, 1 otherwise."""
+    """Return 0 for high-priority strips (have audio), 1 for low priority.
+
+    Strips with an audio track get higher priority for caching.
+    SOUND strips get priority 0 (audio-only needs to be cached for waveform).
+    """
+    if strip.type == 'SOUND':
+        return 0  # Audio strips always priority
     if hasattr(strip, 'audio') and strip.audio is not None:
         return 0
     return 1
