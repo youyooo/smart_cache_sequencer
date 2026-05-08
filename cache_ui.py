@@ -222,6 +222,25 @@ class CACHE_PT_smart_cache(bpy.types.Panel):
         row.prop(settings, "memory_cache_limit_mb")
         row.operator("smart_cache.apply_memory_cache", text="", icon='CHECKMARK')
         box.prop(settings, "max_cache_size_gb")
+
+        # Tiered cache usage (RAM & SSD progress, hit statistics)
+        try:
+            ram = manager.get_ram_usage()
+            ram_used_mb = ram['used_bytes'] / (1024 * 1024)
+            ram_max_mb = ram['max_bytes'] / (1024 * 1024)
+            box.label(text=f"热帧缓存 (RAM): {ram_used_mb:.0f} MB / {ram_max_mb:.0f} MB")
+            box.progress(factor=min(ram_used_mb / max(ram_max_mb, 1), 1.0))
+
+            usage = manager.get_disk_usage()
+            box.label(text=f"温帧缓存 (SSD): {usage['total_size_mb']:.0f} MB / {usage['max_size_gb']:.0f} GB")
+            box.progress(factor=min(usage['total_size_mb'] / max(usage['max_size_gb'] * 1024, 1), 1.0))
+
+            stats = manager.get_hit_stats()
+            row = box.row()
+            row.label(text=f"RAM:{stats['ram_hits']} / SSD:{stats['ssd_hits']} / L2:{stats['on_demand_count']}")
+        except Exception:
+            pass
+
         box.prop(settings, "cache_quality")
         box.prop(settings, "proxy_render_size")
         box.prop(settings, "cache_directory")

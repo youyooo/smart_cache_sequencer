@@ -1,16 +1,163 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 
-"""Frame-by-frame VSE strip rendering to disk cache.
+"""Frame-by-frame VSE strip rendering to disk cache with layered cache support.
 
 Rendering strategy (two methods, tried in order):
   1. bpy.ops.render.render(write_still=True)
      Works from any context, no viewport needed.  Sets scene.render.use_sequencer.
   2. bpy.ops.render.opengl(sequencer=True) via temp_override
      Faster but needs a valid 3D Viewport area for the OpenGL context.
+
+Layered cache integration:
+  - Newly rendered frames are stored in both SSD (on-disk) and RAM (hot cache).
+  - On-demand rendering (L2 cold path) renders to temp and returns bytes.
 """
 
 import bpy
 import os
+import tempfile
+
+from . import cache_key as ck
+
+
+# ── Shared render helpers ──────────────────────────────────────────────
+# These are module-level so both CacheRenderManager and CacheManager can
+# reuse the same save/restore/render logic without circular imports.
+
+def _find_viewport_area():
+    """Find the first 3D Viewport area for OpenGL rendering context."""
+    for screen in bpy.data.screens:
+        for area in screen.areas:
+            if area.type == "VIEW_3D":
+                return area
+    return None
+
+
+def _find_window():
+    """Find an open window for context override."""
+    wm = bpy.context.window_manager
+    if wm.windows:
+        return wm.windows[0]
+    return None
+
+
+def _do_raw_render(scene, output_path) -> bool:
+    """Attempt rendering using two strategies.  Returns True if output file exists."""
+
+    # ── Method 1: Full render pipeline (no viewport required) ─────
+    try:
+        # Ensure there's always an active camera so render.render() doesn't bail
+        if not scene.camera:
+            cam_data = bpy.data.cameras.new("__sc_temp_cam")
+            cam_obj = bpy.data.objects.new("__sc_temp_cam", cam_data)
+            scene.camera = cam_obj
+
+        bpy.ops.render.render(write_still=True)
+        if os.path.exists(output_path):
+            return True
+    except Exception as e:
+        print(f"[Smart Cache]   render.render() failed: {e}")
+
+    # ── Method 2: OpenGL render via viewport ──────────────────────
+    try:
+        viewport_area = _find_viewport_area()
+        win = _find_window()
+        if viewport_area and win:
+            with bpy.context.temp_override(
+                window=win,
+                area=viewport_area,
+            ):
+                bpy.ops.render.opengl(
+                    animation=False,
+                    sequencer=True,
+                    write_still=True,
+                    view_context=False,
+                )
+            if os.path.exists(output_path):
+                print("[Smart Cache]   Used OpenGL render (sequencer=True)")
+                return True
+    except Exception as e:
+        print(f"[Smart Cache]   render.opengl() failed: {e}")
+
+    return False
+
+
+def _render_strip_frame(scene, strip, frame: int, output_path: str, layer: int = 0) -> bool:
+    """Render a single frame of a strip to a PNG file.
+
+    Saves and restores all scene state (mutes, render settings, frame, camera).
+    Handles modifier enable/disable for layer 0 (base) vs layer 1 (with modifiers).
+
+    Returns True if the output file was successfully created.
+    """
+    se = scene.sequence_editor
+    if not se:
+        return False
+
+    render = scene.render
+
+    # ── Save state ────────────────────────────────────────────────
+    original_frame = scene.frame_current
+    original_filepath = render.filepath
+    original_format = render.image_settings.file_format
+    original_color_mode = render.image_settings.color_mode
+    original_quality = render.image_settings.quality
+    original_res_x = render.resolution_x
+    original_res_y = render.resolution_y
+    original_use_sequencer = render.use_sequencer
+    original_mutes = {}
+    for s in se.strips:
+        original_mutes[s.name] = s.mute
+    original_camera = scene.camera
+
+    # ── Setup scene ───────────────────────────────────────────────
+    mod_enabled = {}
+    try:
+        # Mute all strips except target
+        for s in se.strips:
+            s.mute = True
+        strip.mute = False
+
+        # L0: disable modifiers
+        if layer == 0 and hasattr(strip, "modifiers"):
+            mod_enabled = {m.name: m.enable for m in strip.modifiers}
+            for m in strip.modifiers:
+                m.enable = False
+
+        # Set frame and update depsgraph
+        scene.frame_set(frame)
+        bpy.context.view_layer.update()
+
+        # Make sure the VSE is included in renders
+        render.use_sequencer = True
+        render.filepath = output_path
+        render.image_settings.file_format = "PNG"
+        render.image_settings.color_mode = "RGBA"
+        render.image_settings.quality = 90
+
+        # ── Render ────────────────────────────────────────────────
+        return _do_raw_render(scene, output_path)
+
+    finally:
+        # ── Restore state ──────────────────────────────────────────
+        for s in se.strips:
+            if s.name in original_mutes:
+                s.mute = original_mutes[s.name]
+
+        if layer == 0 and mod_enabled:
+            for m in strip.modifiers:
+                if m.name in mod_enabled:
+                    m.enable = mod_enabled[m.name]
+
+        render.use_sequencer = original_use_sequencer
+        render.filepath = original_filepath
+        render.image_settings.file_format = original_format
+        render.image_settings.color_mode = original_color_mode
+        render.image_settings.quality = original_quality
+        render.resolution_x = original_res_x
+        render.resolution_y = original_res_y
+        scene.camera = original_camera
+        scene.frame_set(original_frame)
 
 
 class CacheRenderManager:
@@ -24,7 +171,7 @@ class CacheRenderManager:
         self._cancel_flag = False
         self._progress = {"current": 0, "total": 0, "strip_name": ""}
         # Cache a reference to the first 3D View area for OpenGL fallback
-        self._viewport_area = self._find_viewport_area()
+        self._viewport_area = _find_viewport_area()
 
     # ── Properties ────────────────────────────────────────────────────
 
@@ -97,7 +244,6 @@ class CacheRenderManager:
         self._render_single_frame(strip_name, frame, layer)
 
         # Return interval in seconds — render next frame 50 ms later
-        # Only continue if more work remains and not cancelled
         if self._cancel_flag or not self._render_queue:
             self._is_rendering = False
             self._is_internal_rendering = False
@@ -107,7 +253,11 @@ class CacheRenderManager:
     # ── Single frame render ───────────────────────────────────────────
 
     def _render_single_frame(self, strip_name: str, frame: int, layer: int):
-        """Render a single frame of a strip to disk."""
+        """Render a single frame to disk, then store in RAM cache (hot path).
+
+        After a successful render the frame bytes are also stored in the
+        RAM hot cache so subsequent accesses are served from memory.
+        """
         scene = bpy.context.scene
         se = scene.sequence_editor
         if not se:
@@ -119,65 +269,31 @@ class CacheRenderManager:
 
         output_path = self.cache_manager.get_frame_path(strip, frame, layer)
         if os.path.exists(output_path):
-            # Already cached — just record in index if missing
+            # Already cached on disk — record in index if missing
             self.cache_manager.record_cached_frame(strip, frame, layer, output_path)
             return
 
-        render = scene.render
-
-        # ── Save state ────────────────────────────────────────────────
-        original_frame = scene.frame_current
-        original_filepath = render.filepath
-        original_format = render.image_settings.file_format
-        original_color_mode = render.image_settings.color_mode
-        original_quality = render.image_settings.quality
-        original_res_x = render.resolution_x
-        original_res_y = render.resolution_y
-        original_use_sequencer = render.use_sequencer
-        original_mutes = {}
-        for s in se.strips:
-            original_mutes[s.name] = s.mute
-        original_camera = scene.camera
-
-        # ── Setup scene ───────────────────────────────────────────────
+        self._is_internal_rendering = True
         try:
-            self._is_internal_rendering = True
+            rendered = _render_strip_frame(scene, strip, frame, output_path, layer)
 
-            # Mute all strips except target
-            for s in se.strips:
-                s.mute = True
-            strip.mute = False
-
-            # L0: disable modifiers
-            mod_enabled = {}
-            if layer == 0 and hasattr(strip, "modifiers"):
-                mod_enabled = {m.name: m.enable for m in strip.modifiers}
-                for m in strip.modifiers:
-                    m.enable = False
-
-            # Set frame and update depsgraph
-            scene.frame_set(frame)
-            bpy.context.view_layer.update()
-
-            # Make sure the VSE is included in renders
-            render.use_sequencer = True
-            render.filepath = output_path
-            render.image_settings.file_format = "PNG"
-            render.image_settings.color_mode = "RGBA"
-            render.image_settings.quality = 90
-
-            # ── Render ────────────────────────────────────────────────
-            rendered = self._do_render(scene, output_path)
-
-            # ── Record ────────────────────────────────────────────────
             if rendered and os.path.exists(output_path):
                 self.cache_manager.record_cached_frame(strip, frame, layer, output_path)
-                print(f"[Smart Cache] ✓ Cached: {strip_name} frame {frame} → {os.path.basename(output_path)}")
+
+                # Newly rendered frames are hot — promote to RAM cache
+                with open(output_path, 'rb') as f:
+                    frame_bytes = f.read()
+                key = ck.compute_frame_key(strip, frame, layer)
+                self.cache_manager.store_ram_frame(key, frame_bytes)
+
+                print(f"[Smart Cache] ✓ Cached: {strip_name} frame {frame} "
+                      f"→ {os.path.basename(output_path)} (RAM+SSD)")
             elif os.path.exists(output_path):
-                # File exists but we didn't claim success — record anyway
+                # File exists but render claimed failure — record anyway
                 self.cache_manager.record_cached_frame(strip, frame, layer, output_path)
             else:
-                print(f"[Smart Cache] ✗ Render claimed OK but file missing: {output_path}")
+                print(f"[Smart Cache] ✗ Render FAILED: {strip_name} frame {frame} "
+                      f"— output file missing")
 
         except Exception as e:
             print(f"[Smart Cache] ✗ Render FAILED: {strip_name} frame {frame}: {e}")
@@ -185,70 +301,49 @@ class CacheRenderManager:
             traceback.print_exc()
 
         finally:
-            # ── Restore state ──────────────────────────────────────────
-            for s in se.strips:
-                if s.name in original_mutes:
-                    s.mute = original_mutes[s.name]
-
-            if layer == 0 and mod_enabled:
-                for m in strip.modifiers:
-                    if m.name in mod_enabled:
-                        m.enable = mod_enabled[m.name]
-
-            render.use_sequencer = original_use_sequencer
-            render.filepath = original_filepath
-            render.image_settings.file_format = original_format
-            render.image_settings.color_mode = original_color_mode
-            render.image_settings.quality = original_quality
-            render.resolution_x = original_res_x
-            render.resolution_y = original_res_y
-            scene.camera = original_camera
-            scene.frame_set(original_frame)
             self._is_internal_rendering = False
 
-    def _do_render(self, scene, output_path) -> bool:
-        """Attempt rendering using two strategies.  Returns True if output file exists."""
+    # ── On-Demand render (L2 cold path) ───────────────────────────────
 
-        # ── Method 1: Full render pipeline (no viewport required) ─────
+    def render_on_demand(self, strip, frame: int, layer: int = 0) -> bytes | None:
+        """Render a frame on demand without disk caching.
+
+        Renders to a temp file, reads the bytes back, removes the temp file.
+        Does NOT write to the persistent cache or update the index.
+        Does NOT store in the RAM hot cache (designed for infrequent access).
+
+        Returns PNG bytes or None on failure.
+        """
+        scene = bpy.context.scene
+        fd, tmp_path = tempfile.mkstemp(suffix='.png')
+        os.close(fd)
+
+        self._is_internal_rendering = True
         try:
-            # Ensure there's always an active camera so render.render() doesn't bail
-            if not scene.camera:
-                # Create a temporary camera object
-                cam_data = bpy.data.cameras.new("__sc_temp_cam")
-                cam_obj = bpy.data.objects.new("__sc_temp_cam", cam_data)
-                # Don't link to collection — just set as scene camera
-                # (Blender allows orphan data as camera)
-                scene.camera = cam_obj
+            rendered = _render_strip_frame(scene, strip, frame, tmp_path, layer)
+            if rendered and os.path.exists(tmp_path):
+                with open(tmp_path, 'rb') as f:
+                    frame_bytes = f.read()
+                print(f"[Smart Cache] ✓ On-Demand: {strip.name} frame {frame} "
+                      f"({len(frame_bytes) / 1024:.0f} KB)")
+                return frame_bytes
 
-            bpy.ops.render.render(write_still=True)
-            if os.path.exists(output_path):
-                return True
+            print(f"[Smart Cache] ✗ On-Demand FAILED: {strip.name} frame {frame}")
+            return None
+
         except Exception as e:
-            print(f"[Smart Cache]   render.render() failed: {e}")
+            print(f"[Smart Cache] ✗ On-Demand error: {strip.name} frame {frame}: {e}")
+            import traceback
+            traceback.print_exc()
+            return None
 
-        # ── Method 2: OpenGL render via viewport ──────────────────────
-        try:
-            if not self._viewport_area:
-                self._viewport_area = self._find_viewport_area()
-            win = self._find_window()
-            if self._viewport_area and win:
-                with bpy.context.temp_override(
-                    window=win,
-                    area=self._viewport_area,
-                ):
-                    bpy.ops.render.opengl(
-                        animation=False,
-                        sequencer=True,
-                        write_still=True,
-                        view_context=False,
-                    )
-                if os.path.exists(output_path):
-                    print("[Smart Cache]   Used OpenGL render (sequencer=True)")
-                    return True
-        except Exception as e:
-            print(f"[Smart Cache]   render.opengl() failed: {e}")
-
-        return False
+        finally:
+            self._is_internal_rendering = False
+            if os.path.exists(tmp_path):
+                try:
+                    os.remove(tmp_path)
+                except OSError:
+                    pass
 
     # ── Context helpers ───────────────────────────────────────────────
 

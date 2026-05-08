@@ -1,16 +1,24 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 
-"""Cache index, LRU eviction, and disk management."""
+"""Cache index, LRU eviction, disk management, and layered cache.
+
+Layered cache architecture:
+  - RAM (L0 hot): in-memory PNG bytes for recently accessed frames
+  - SSD (L1 warm): on-disk PNG files for cached frames
+  - On-Demand (L2 cold): rendered on request, not cached
+"""
 
 import json
 import os
+import tempfile
 import time
+from collections import OrderedDict
 
 from . import cache_key as ck
 
 
 class CacheManager:
-    """Manages the disk cache with LRU eviction.
+    """Manages the disk cache with LRU eviction and layered cache support.
 
     Directory structure:
         strips/{strip_name}_{base_hash}/
@@ -25,6 +33,18 @@ class CacheManager:
         self.max_size_bytes = int(max_size_gb * 1024 * 1024 * 1024)
         self.index: dict[str, dict] = {}  # cache_key -> metadata
         self.strip_hashes: dict[str, dict] = {}  # strip_name -> {base_hash, mod_hash}
+
+        # RAM cache (L0 hot frames) — store PNG bytes for recently accessed frames
+        self.ram_cache: OrderedDict[str, bytes] = OrderedDict()
+        # 80 % of 512 MB default; 20 % reserved for system
+        self.ram_cache_max_bytes: int = int(512 * 0.8 * 1024 * 1024)
+        self.ram_cache_current_bytes: int = 0
+
+        # Cache hit statistics
+        self.ram_hits: int = 0          # frames served from RAM
+        self.ssd_hits: int = 0          # frames served from disk
+        self.on_demand_count: int = 0   # frames rendered on-demand (L2)
+
         self._load_index()
 
     @property
@@ -123,12 +143,14 @@ class CacheManager:
         self._save_index()
 
     def purge_all(self):
-        """Delete all cache files and reset index."""
+        """Delete all cache files and reset index. Also clears RAM cache."""
         import shutil
         if os.path.exists(self.base_dir):
             shutil.rmtree(self.base_dir)
         self.index.clear()
         self.strip_hashes.clear()
+        self.ram_cache.clear()
+        self.ram_cache_current_bytes = 0
 
     def purge_stale(self):
         """Remove cache for strips no longer in the scene."""
@@ -163,6 +185,141 @@ class CacheManager:
             'strip_count': len(strip_count),
             'max_size_gb': self.max_size_bytes / (1024 * 1024 * 1024),
         }
+
+    # ── RAM cache (L0 hot frames) ────────────────────────────────────
+
+    def set_ram_cache_limit(self, limit_mb: int):
+        """Set RAM cache limit. Only 80% is usable (20% reserved for system)."""
+        self.ram_cache_max_bytes = int(limit_mb * 0.8 * 1024 * 1024)
+
+    def store_ram_frame(self, key: str, pixels_bytes: bytes):
+        """Store rendered frame bytes in the RAM hot cache.
+
+        If the key already exists, it is updated and moved to the
+        most-recently-used position.  LRU eviction runs automatically
+        if the cache exceeds its memory limit.
+        """
+        if key in self.ram_cache:
+            old_size = len(self.ram_cache[key])
+            self.ram_cache_current_bytes -= old_size
+            del self.ram_cache[key]
+        self.ram_cache[key] = pixels_bytes
+        self.ram_cache_current_bytes += len(pixels_bytes)
+        self._evict_ram_if_needed()
+
+    def fetch_ram_frame(self, key: str) -> bytes | None:
+        """Retrieve frame bytes from RAM cache.
+
+        Moves the accessed entry to the most-recently-used position
+        (O(1) via OrderedDict). Returns None on cache miss.
+        """
+        if key not in self.ram_cache:
+            return None
+        self.ram_cache.move_to_end(key)  # Mark as recently used
+        self.ram_hits += 1
+        return self.ram_cache[key]
+
+    def _evict_ram_if_needed(self):
+        """LRU evict from RAM until under the memory limit.
+
+        Evicted frames are NOT removed from the SSD cache — they remain
+        available as warm frames (demoted from hot to warm tier).
+        """
+        while self.ram_cache_current_bytes > self.ram_cache_max_bytes and self.ram_cache:
+            key, data = self.ram_cache.popitem(last=False)
+            self.ram_cache_current_bytes -= len(data)
+
+    def promote_to_ram(self, strip, frame: int, layer: int = 0) -> bool:
+        """Read a disk-cached frame into the RAM hot cache.
+
+        If the frame is already in RAM, it is refreshed (moved to the
+        most-recently-used position).  Returns True on success, False
+        if the frame is not on disk.
+        """
+        path = self.get_frame_path(strip, frame, layer)
+        if not os.path.exists(path):
+            return False
+        key = ck.compute_frame_key(strip, frame, layer)
+        if key in self.ram_cache:
+            self.ram_cache.move_to_end(key)
+            return True
+        try:
+            with open(path, 'rb') as f:
+                data = f.read()
+            self.store_ram_frame(key, data)
+            return True
+        except OSError:
+            return False
+
+    def demote_to_ssd(self, strip, frame: int, layer: int = 0):
+        """Remove a frame from RAM cache. The SSD (disk) copy is preserved.
+
+        This is a hot→warm demotion: the frame was promoted to RAM but
+        is now being evicted.  It remains fully accessible from the
+        SSD tier.
+        """
+        key = ck.compute_frame_key(strip, frame, layer)
+        if key in self.ram_cache:
+            old_size = len(self.ram_cache[key])
+            self.ram_cache_current_bytes -= old_size
+            del self.ram_cache[key]
+
+    def get_ram_usage(self) -> dict:
+        """Get RAM cache usage statistics."""
+        return {
+            'used_bytes': self.ram_cache_current_bytes,
+            'max_bytes': self.ram_cache_max_bytes,
+            'frame_count': len(self.ram_cache),
+        }
+
+    def get_hit_stats(self) -> dict:
+        """Get cache hit statistics per tier."""
+        return {
+            'ram_hits': self.ram_hits,
+            'ssd_hits': self.ssd_hits,
+            'on_demand_count': self.on_demand_count,
+        }
+
+    # ── L2 on-demand rendering (cold path) ───────────────────────────
+
+    def render_on_demand(self, strip, frame: int, layer: int = 0) -> bytes | None:
+        """Render a single frame on demand without disk caching.
+
+        L2 cold path: renders the frame to a temporary file, reads the
+        PNG bytes back, and removes the temporary file.  Does NOT write
+        to the persistent cache or record in the index.
+
+        Designed for jump-to-frame or infrequently-accessed frames in
+        long sequences.
+
+        Returns PNG bytes or None on failure.
+        """
+        from .cache_render import _render_strip_frame
+        import bpy
+        scene = bpy.context.scene
+        fd, tmp_path = tempfile.mkstemp(suffix='.png')
+        os.close(fd)
+        try:
+            rendered = _render_strip_frame(scene, strip, frame, tmp_path, layer)
+            if rendered and os.path.exists(tmp_path):
+                with open(tmp_path, 'rb') as f:
+                    frame_bytes = f.read()
+                self.on_demand_count += 1
+                return frame_bytes
+            return None
+        except Exception as e:
+            print(f"[Smart Cache] On-Demand render failed: {strip.name} frame {frame}: {e}")
+            import traceback
+            traceback.print_exc()
+            return None
+        finally:
+            if os.path.exists(tmp_path):
+                try:
+                    os.remove(tmp_path)
+                except OSError:
+                    pass
+
+    # ── Disk-index helpers ───────────────────────────────────────────
 
     def strip_has_cache(self, strip_name: str, layer: int = 0) -> bool:
         """Check if any frames are cached for a strip at the given layer."""
