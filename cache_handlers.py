@@ -36,10 +36,10 @@ def on_frame_change_pre(scene):
             if strip:
                 manager.touch_frame(strip, frame, 0)
 
-    # Trigger prefetch during playback
+    # Trigger playhead prefetch during playback
     if prefetch and not renderer.is_rendering and settings.auto_cache_on_playback:
         if scene.is_animation_playing:
-            prefetch.on_frame_change(frame, scene)
+            prefetch.on_playhead_move(frame, scene)
 
 
 @persistent
@@ -81,9 +81,11 @@ def on_save_pre(dummy):
     settings = getattr(scene, 'smart_cache', None)
     if not settings:
         return
-    manager, _, _, _ = _get()
+    manager, _, _, prefetch = _get()
     if manager:
         manager._save_index()
+    if prefetch:
+        prefetch.save_session_state()
 
 
 @persistent
@@ -92,9 +94,11 @@ def on_load_post(dummy):
     settings = getattr(scene, 'smart_cache', None)
     if not settings:
         return
-    manager, _, _, _ = _get()
+    manager, _, _, prefetch = _get()
     if manager:
         manager._load_index()
+    if prefetch:
+        prefetch.load_session_state(scene)
 
 
 @persistent
@@ -105,6 +109,24 @@ def on_render_pre(scene):
     _, _, server, _ = _get()
     if server and server.is_active:
         server.disable_for_render(scene)
+
+
+def _idle_timer():
+    """Timer callback — triggers idle background rendering every ~2 seconds.
+
+    Registered as a Blender persistent timer so it survives across
+    playhead scrubs and short idle pauses.
+    """
+    scene = bpy.context.scene
+    settings = getattr(scene, 'smart_cache', None)
+    if not settings or not settings.enabled:
+        return 2.0
+
+    _, _, _, prefetch = _get()
+    if prefetch:
+        prefetch.on_idle(scene)
+
+    return 2.0  # reschedule every 2 seconds
 
 
 def register_handlers():
@@ -119,6 +141,9 @@ def register_handlers():
         if handler not in handler_list:
             handler_list.append(handler)
 
+    if not bpy.app.timers.is_registered(_idle_timer):
+        bpy.app.timers.register(_idle_timer, first_interval=2.0, persistent=True)
+
 
 def unregister_handlers():
     handlers = [
@@ -131,3 +156,6 @@ def unregister_handlers():
     for handler_list, handler in handlers:
         if handler in handler_list:
             handler_list.remove(handler)
+
+    if bpy.app.timers.is_registered(_idle_timer):
+        bpy.app.timers.unregister(_idle_timer)

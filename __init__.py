@@ -3,7 +3,7 @@
 bl_info = {
     "name": "Smart Cache Sequencer",
     "author": "Smart Cache",
-    "version": (1, 0, 19),
+    "version": (1, 0, 22),
     "blender": (4, 4, 0),
     "location": "Sequencer > Sidebar > Smart Cache",
     "description": "AE-inspired disk caching for VSE strips with layered cache and position-independent hashing",
@@ -18,9 +18,11 @@ import tempfile
 from . import cache_manager as cm_mod
 from . import cache_render as cr_mod
 from . import cache_serve as cs_mod
+from . import cache_prefetch as cp_mod
 from . import cache_handlers
 from . import cache_ui
 from . import cache_core
+from . import cache_system
 
 
 def get_singletons():
@@ -43,14 +45,22 @@ def get_blend_cache_dir(scene):
 
 
 def apply_system_cache_settings(scene):
-    """Apply our cache settings to Blender's system VSE cache."""
+    """Apply our cache settings to Blender's system VSE cache.
+
+    In Blender 5.x this is a no-op since caching is managed via
+    use_cache_raw/use_cache_final booleans (handled by takeover).
+    In Blender 4.x it sets cache_memory_limit for the legacy VSE cache.
+    """
     settings = scene.smart_cache
     se = scene.sequence_editor
     if not se:
         return
     try:
-        se.cache_memory_limit = settings.memory_cache_limit_mb
-        print(f"[Smart Cache] Set memory cache limit to {settings.memory_cache_limit_mb} MB")
+        if hasattr(se, 'cache_memory_limit'):
+            se.cache_memory_limit = settings.memory_cache_limit_mb
+            print(f"[Smart Cache] Set memory cache limit to {settings.memory_cache_limit_mb} MB")
+        else:
+            print(f"[Smart Cache] VSE cache managed by takeover (use_cache_raw=False)")
     except Exception as e:
         print(f"[Smart Cache] Could not set memory cache limit: {e}")
 
@@ -131,14 +141,27 @@ def init_singletons(scene):
         print(f"[Smart Cache] Server created OK")
 
         print("[Smart Cache] Creating PrefetchManager...")
-        prefetch = cs_mod.PrefetchManager(manager, renderer, settings.prefetch_lookahead)
+        prefetch = cp_mod.PrefetchManager(
+            manager, renderer,
+            lookahead=settings.prefetch_lookahead,
+            strategy=settings.prefetch_strategy,
+            idle_enabled=settings.idle_rendering,
+            session_recovery=settings.session_recovery,
+        )
         print(f"[Smart Cache] Prefetch created OK")
 
         cache_core.set_singletons(manager, renderer, server, prefetch)
         print(f"[Smart Cache] Singletons set")
 
-        apply_system_cache_settings(scene)
-        auto_cache_all(scene)
+        cache_system.takeover_system_cache(scene)
+
+        # Try session recovery first; fall back to full auto-cache
+        if prefetch.session_recovery:
+            recovered = prefetch.load_session_state(scene)
+            if not recovered:
+                auto_cache_all(scene)
+        else:
+            auto_cache_all(scene)
 
         print(f"[Smart Cache] Initialized OK: {cache_dir}")
         return (True, "")
@@ -204,6 +227,7 @@ def register():
 def unregister():
     cleanup_singletons(bpy.context)
     cache_handlers.unregister_handlers()
+    cache_system.restore_if_taken_over(bpy.context)
     cache_ui.unregister()
     if hasattr(bpy.types.Scene, 'smart_cache'):
         del bpy.types.Scene.smart_cache

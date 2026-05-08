@@ -223,9 +223,15 @@ class CacheManager:
                 data = json.load(f)
             self.index = data.get('entries', {})
             self.strip_hashes = data.get('strip_hashes', {})
+            # Preserve any extra keys (e.g. cache_state from PrefetchManager)
+            self._extra_index_data = {
+                k: v for k, v in data.items()
+                if k not in ('entries', 'strip_hashes')
+            }
         except (json.JSONDecodeError, KeyError):
             self.index = {}
             self.strip_hashes = {}
+            self._extra_index_data = {}
 
     def _save_index(self):
         self.ensure_dirs()
@@ -233,6 +239,10 @@ class CacheManager:
             'entries': self.index,
             'strip_hashes': self.strip_hashes,
         }
+        # Preserve extra metadata written by other modules (e.g. cache_state)
+        extra = getattr(self, '_extra_index_data', None)
+        if extra:
+            data.update(extra)
         with open(self.index_path, 'w') as f:
             json.dump(data, f, indent=2)
 

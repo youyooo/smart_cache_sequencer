@@ -9,6 +9,7 @@ import traceback
 from bpy.props import BoolProperty, FloatProperty, IntProperty, StringProperty, EnumProperty
 
 from . import cache_core
+from . import cache_system
 
 
 class SmartCacheSettings(bpy.types.PropertyGroup):
@@ -37,6 +38,26 @@ class SmartCacheSettings(bpy.types.PropertyGroup):
         default=30,
         min=5,
         max=120,
+    )
+    prefetch_strategy: EnumProperty(
+        name="Prefetch Strategy",
+        description="How aggressively to scan for uncached frames during idle time",
+        items=[
+            ('conservative', 'Conservative', 'Only cache the strip at the current playhead'),
+            ('balanced', 'Balanced', 'Cache strips within a 120-frame window around the playhead'),
+            ('aggressive', 'Aggressive', 'Cache all strips in the timeline'),
+        ],
+        default='balanced',
+    )
+    idle_rendering: BoolProperty(
+        name="Idle Rendering",
+        description="Automatically render uncached frames when the renderer is idle",
+        default=True,
+    )
+    session_recovery: BoolProperty(
+        name="Session Recovery",
+        description="Restore cache state automatically when reopening a project",
+        default=True,
     )
     cache_quality: IntProperty(
         name="Cache Quality",
@@ -145,6 +166,28 @@ class CACHE_PT_smart_cache(bpy.types.Panel):
         except Exception:
             pass
 
+        # === CACHE MODE ===
+        try:
+            cinfo = cache_system.get_cache_info(context.scene)
+            box = layout.box()
+            box.label(text="Cache Mode", icon='SYSTEM')
+            if cinfo.get('taken_over', False):
+                box.label(text="缓存模式: 智能接管", icon='FILE_CACHE')
+            else:
+                box.label(text="缓存模式: 原生", icon='LAYER_USED')
+            # Show VSE memory cache usage
+            raw_mb = cinfo.get('cache_raw_size', 0)
+            final_mb = cinfo.get('cache_final_size', 0)
+            total_mb = raw_mb + final_mb
+            row = box.row()
+            row.label(text=f"VSE缓存: {total_mb} MB")
+            if total_mb > 0:
+                row.operator("smart_cache.free_memory", text="释放缓存", icon='FREEZE')
+            else:
+                row.label(text="(已禁用)")
+        except Exception:
+            pass
+
         # Progress
         if renderer and renderer.is_rendering:
             box = layout.box()
@@ -183,8 +226,16 @@ class CACHE_PT_smart_cache(bpy.types.Panel):
         box.prop(settings, "proxy_render_size")
         box.prop(settings, "cache_directory")
         box.prop(settings, "prefetch_lookahead")
+        box.prop(settings, "prefetch_strategy")
+        box.prop(settings, "idle_rendering")
+        box.prop(settings, "session_recovery")
         box.prop(settings, "auto_cache_on_playback")
         box.prop(settings, "persistent_proxy")
+        # Show prefetch queue length
+        if prefetch:
+            qlen = prefetch.queue_length
+            row = box.row()
+            row.label(text=f"Prefetch Queue: {qlen}")
 
         # Per-strip cache progress
         try:
@@ -425,8 +476,12 @@ class SMART_CACHE_OT_apply_memory_cache(bpy.types.Operator):
         try:
             se = context.scene.sequence_editor
             if se:
-                se.cache_memory_limit = settings.memory_cache_limit_mb
-                self.report({'INFO'}, f"Memory cache limit set to {settings.memory_cache_limit_mb} MB")
+                if hasattr(se, 'cache_memory_limit'):
+                    se.cache_memory_limit = settings.memory_cache_limit_mb
+                    self.report({'INFO'}, f"Memory cache limit set to {settings.memory_cache_limit_mb} MB")
+                else:
+                    # Blender 5.x uses boolean flags; takeover handles this
+                    self.report({'INFO'}, "VSE cache managed by Smart Cache takeover")
             else:
                 self.report({'WARNING'}, "No sequence editor found")
         except Exception as e:
@@ -500,6 +555,25 @@ class SMART_CACHE_OT_clear_cache_memory(bpy.types.Operator):
         return {'FINISHED'}
 
 
+class SMART_CACHE_OT_free_memory(bpy.types.Operator):
+    bl_idname = "smart_cache.free_memory"
+    bl_label = "释放缓存"
+    bl_description = "Clear native VSE memory cache"
+
+    def execute(self, context):
+        se = context.scene.sequence_editor
+        if se:
+            # Re-assert takeover: disable native caching
+            se.use_cache_raw = False
+            se.use_cache_final = False
+        try:
+            bpy.ops.sequencer.clear_proxy_cache()
+        except Exception:
+            pass
+        self.report({'INFO'}, "Native VSE cache cleared")
+        return {'FINISHED'}
+
+
 classes = [
     SmartCacheSettings,
     CACHE_PT_smart_cache,
@@ -514,6 +588,7 @@ classes = [
     SMART_CACHE_OT_open_cache_dir,
     SMART_CACHE_OT_build_proxies,
     SMART_CACHE_OT_clear_cache_memory,
+    SMART_CACHE_OT_free_memory,
 ]
 
 
