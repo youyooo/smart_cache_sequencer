@@ -3,7 +3,7 @@
 bl_info = {
     "name": "Smart Cache Sequencer",
     "author": "Smart Cache",
-    "version": (1, 0, 18),
+    "version": (1, 1, 0),
     "blender": (4, 4, 0),
     "location": "Sequencer > Sidebar > Smart Cache",
     "description": "AE-inspired disk caching for VSE strips with layered cache and position-independent hashing",
@@ -92,8 +92,13 @@ def auto_cache_all(scene):
 
 
 def init_singletons(scene):
-    """Initialize cache singletons synchronously. Returns (success, error_msg)."""
+    """Initialize cache singletons synchronously. Returns (success, error_msg).
+
+    Safe to call multiple times — previous singletons are cleaned up first.
+    """
     print("[Smart Cache] Initializing...")
+    # Clean up any previous singletons before creating new ones
+    cleanup_singletons(None)
     try:
         settings = scene.smart_cache
         if not settings:
@@ -146,15 +151,23 @@ def init_singletons(scene):
 
 
 def cleanup_singletons(context):
-    """Stop rendering and disable proxy strips."""
-    renderer = cache_core.get_singletons()[1]
-    server = cache_core.get_singletons()[2]
+    """Stop rendering, disable proxy strips, clear singletons.
+
+    Safe to call with None context (disable_cache_playback will be skipped).
+    """
+    mgr, renderer, server, prefetch = cache_core.get_singletons()
 
     if renderer:
         renderer.cancel_render()
-    if server and context:
+    if server:
         try:
-            server.disable_cache_playback(context)
+            if context:
+                server.disable_cache_playback(context)
+            else:
+                # Try to find a valid context for proxy cleanup
+                se = getattr(bpy.context, 'scene', None)
+                if se and getattr(se, 'sequence_editor', None):
+                    server.disable_cache_playback(bpy.context)
         except Exception:
             pass
 

@@ -1,6 +1,11 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 
-"""Proxy strip creation and mute management for cache playback."""
+"""Proxy strip creation and mute management for cache playback.
+
+After frames are cached to disk as PNG image sequences, this module
+replaces original VSE strips with proxy Image Sequence strips that
+point to the cached files, providing smooth scrubbing and playback.
+"""
 
 import bpy
 import os
@@ -8,7 +13,7 @@ import os
 from .cache_manager import _safe_strip_name
 
 CACHE_PREFIX = "SC_"
-CACHEABLE_TYPES = {'MOVIE', 'IMAGE', 'SCENE'}
+CACHEABLE_TYPES = {"MOVIE", "IMAGE", "SCENE"}
 
 
 class CachePlaybackController:
@@ -24,8 +29,10 @@ class CachePlaybackController:
     def is_active(self):
         return self._is_active
 
+    # ── Public API ────────────────────────────────────────────────────
+
     def enable_cache_playback(self, context):
-        """Mute original strips, create proxy Image Sequences from cache."""
+        """Mute original strips, replace with proxy Image Sequences."""
         se = context.scene.sequence_editor
         if not se:
             return
@@ -34,64 +41,77 @@ class CachePlaybackController:
         self._original_mutes.clear()
         self.proxy_strips.clear()
 
-        cached_strips = set()
+        # Get all strip names that have at least some L0 cache
+        cached_strip_names = set()
         for entry in self.cache_manager.index.values():
-            cached_strips.add(entry['strip_name'])
+            if entry["layer"] == 0:
+                cached_strip_names.add(entry["strip_name"])
 
-        if not cached_strips:
+        if not cached_strip_names:
             self._is_active = False
             return
 
-        for strip_name in cached_strips:
+        # Count how many frames each strip has cached (contiguous L0)
+        strip_frames: dict[str, list[int]] = {}
+        for name in cached_strip_names:
+            strip_frames[name] = self.cache_manager.get_cached_frames(name, layer=0)
+
+        for strip_name, frames in strip_frames.items():
+            if not frames:
+                continue
+
             strip = self._find_strip(se, strip_name)
             if strip is None or strip.type not in CACHEABLE_TYPES:
                 continue
             if strip.mute:
                 continue
 
-            frames = self.cache_manager.get_cached_frames(strip_name, layer=0)
-            if not frames:
+            # Resolve the cache directory for this strip's L0 cache
+            cache_dir = self._get_l0_dir(strip_name)
+            if not cache_dir or not os.path.isdir(cache_dir):
                 continue
 
-            self._original_mutes[strip_name] = strip.mute
-
-            cache_dir = self.cache_manager.get_cache_dir_for_strip(strip_name, layer=0)
-            if not cache_dir or not os.path.exists(cache_dir):
-                continue
-
-            png_files = sorted([f for f in os.listdir(cache_dir) if f.endswith('.png')])
+            png_files = sorted(
+                f for f in os.listdir(cache_dir) if f.endswith(".png")
+            )
             if not png_files:
                 continue
 
-            first_file = os.path.join(cache_dir, png_files[0])
-            proxy_channel = strip.channel + 1
+            proxy_channel = self._next_free_channel(strip.channel + 1, se)
             proxy_name = f"{CACHE_PREFIX}{strip_name}"
 
             try:
-                proxy = se.strips.new_image(
-                    name=proxy_name,
-                    filepath=first_file,
-                    channel=proxy_channel,
-                    frame_start=strip.frame_final_start,
-                    fit_method='STRETCH',
+                self._add_image_sequence(
+                    context, se, cache_dir, png_files[0],
+                    proxy_name, proxy_channel, frames[0],
                 )
-                proxy.use_animation = True
-                proxy.frame_start = frames[0]
-                proxy.frame_offset_start = 0
+
+                # Locate the newly added strip
+                proxy = se.strips.get(proxy_name)
+                if not proxy:
+                    continue
+
+                # Set duration to match number of cached frames
                 proxy.frame_final_duration = len(frames)
-                proxy.blend_type = strip.blend_type
-                proxy.blend_alpha = strip.blend_alpha
-                proxy.mute = False
                 proxy.lock = True
                 proxy.select = False
+                proxy.mute = False
+
                 self.proxy_strips[strip_name] = [proxy]
             except Exception as e:
                 print(f"[Smart Cache] Proxy creation failed for {strip_name}: {e}")
+                import traceback
+                traceback.print_exc()
 
-        for strip_name in self._original_mutes:
-            strip = self._find_strip(se, strip_name)
-            if strip:
-                strip.mute = True
+        # Mute originals after creating all proxies
+        for strip_name in list(strip_frames.keys()):
+            s = self._find_strip(se, strip_name)
+            if s:
+                self._original_mutes[strip_name] = s.mute
+                s.mute = True
+
+        if not self.proxy_strips:
+            self._is_active = False
 
     def disable_cache_playback(self, context):
         """Remove proxy strips, restore original mute states."""
@@ -121,12 +141,72 @@ class CachePlaybackController:
         if self._is_active:
             self.disable_cache_playback(context)
 
+    # ── Internals ─────────────────────────────────────────────────────
+
+    def _add_image_sequence(
+        self, context, se, directory: str, first_file: str,
+        name: str, channel: int, frame_start: int,
+    ):
+        """Create an Image Sequence strip using the sequencer operator.
+
+        Uses bpy.ops.sequencer.image_strip_add which properly detects
+        image sequences from sequentially-named PNG files.
+        """
+        sequencer_area = self._find_sequencer_area(context)
+        if sequencer_area:
+            with bpy.context.temp_override(
+                window=context.window,
+                area=sequencer_area,
+            ):
+                bpy.ops.sequencer.image_strip_add(
+                    directory=directory,
+                    files=[{"name": first_file}],
+                    frame_start=frame_start,
+                    channel=channel,
+                    set_view_transform=False,
+                )
+        else:
+            # Fallback: try without override (may fail if no SEQUENCE_EDITOR area)
+            bpy.ops.sequencer.image_strip_add(
+                directory=directory,
+                files=[{"name": first_file}],
+                frame_start=frame_start,
+                channel=channel,
+                set_view_transform=False,
+            )
+
+    def _get_l0_dir(self, strip_name: str) -> str:
+        """Resolve the L0 cache directory for a strip from the cache index."""
+        for entry in self.cache_manager.index.values():
+            if entry["strip_name"] == strip_name and entry["layer"] == 0:
+                return os.path.dirname(entry["path"])
+        return ""
+
+    def _find_sequencer_area(self, context):
+        """Find the first SEQUENCE_EDITOR area in the current screen."""
+        screen = getattr(context, "screen", None)
+        if screen:
+            for area in screen.areas:
+                if area.type == "SEQUENCE_EDITOR":
+                    return area
+        # Fallback: search all screens
+        for screen in bpy.data.screens:
+            for area in screen.areas:
+                if area.type == "SEQUENCE_EDITOR":
+                    return area
+        return None
+
+    @staticmethod
+    def _next_free_channel(channel: int, se) -> int:
+        """Find the next available channel at or above the given one."""
+        occupied = {s.channel for s in se.strips}
+        while channel in occupied:
+            channel += 1
+        return channel
+
     @staticmethod
     def _find_strip(se, name: str):
-        for s in se.strips:
-            if s.name == name:
-                return s
-        return None
+        return se.strips.get(name)
 
 
 class PrefetchManager:
@@ -139,7 +219,7 @@ class PrefetchManager:
         self._last_frame = -1
 
     def on_frame_change(self, current_frame: int, scene):
-        """Queue frames ahead of the playhead for prefetch."""
+        """Queue uncached frames ahead of the playhead."""
         if current_frame == self._last_frame:
             return
         self._last_frame = current_frame
@@ -151,6 +231,7 @@ class PrefetchManager:
         if not se:
             return
 
+        queued = 0
         for strip in se.strips:
             if strip.mute or strip.lock:
                 continue
@@ -159,12 +240,14 @@ class PrefetchManager:
 
             start = strip.frame_final_start
             end = strip.frame_final_end
-            if start > current_frame + self.lookahead:
+            if current_frame < start or current_frame > end:
                 continue
 
-            for frame in range(current_frame + 1, min(current_frame + self.lookahead + 1, end)):
+            lookahead_end = min(current_frame + self.lookahead, end)
+            for frame in range(current_frame + 1, lookahead_end):
                 if not self.cache_manager.frame_exists(strip, frame, 0):
                     self.cache_render.queue_frame(strip, frame, 0)
+                    queued += 1
 
-        if self.cache_render._render_queue:
+        if queued > 0:
             self.cache_render.start_render()
