@@ -6,7 +6,7 @@ import bpy
 import os
 import shutil
 import traceback
-from bpy.props import BoolProperty, FloatProperty, IntProperty, StringProperty, EnumProperty
+from bpy.props import BoolProperty, FloatProperty, FloatVectorProperty, IntProperty, StringProperty, EnumProperty
 
 from . import cache_core
 from . import cache_system
