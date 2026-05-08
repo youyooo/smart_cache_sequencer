@@ -16,6 +16,7 @@ Layered cache integration:
 import bpy
 import os
 import tempfile
+import time
 
 from . import cache_key as ck
 
@@ -292,8 +293,11 @@ class CacheRenderManager:
             return
 
         self._is_internal_rendering = True
+        t0 = time.time()
         try:
             rendered = _render_strip_frame(scene, strip, frame, output_path, layer, fmt=fmt, quality=quality)
+            elapsed_ms = (time.time() - t0) * 1000.0
+            self.cache_manager.record_render(elapsed_ms)
 
             if rendered and os.path.exists(output_path):
                 self.cache_manager.record_cached_frame(strip, frame, layer, output_path)

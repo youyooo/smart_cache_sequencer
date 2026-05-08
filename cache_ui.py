@@ -317,6 +317,42 @@ class CACHE_PT_smart_cache(bpy.types.Panel):
         except Exception:
             pass
 
+        # === PERFORMANCE MONITOR ===
+        box = layout.box()
+        box.label(text="Performance Monitor", icon='PLAY')
+        try:
+            stats = manager.get_hit_stats()
+            total = stats['ram_hits'] + stats['ssd_hits']
+            box.label(text=f"Cache Hits: {total}")
+            if total > 0:
+                ram_pct = stats['ram_hits'] / total * 100
+                ssd_pct = stats['ssd_hits'] / total * 100
+                box.label(text=f"RAM: {stats['ram_hits']} ({ram_pct:.0f}%)")
+                box.label(text=f"SSD: {stats['ssd_hits']} ({ssd_pct:.0f}%)")
+            box.label(text=f"L2 On-Demand: {stats['on_demand_count']}")
+            if stats.get('total_renders', 0) > 0:
+                box.label(text=f"Avg Render: {stats['avg_render_time_ms']:.0f} ms")
+
+            # Disk prediction
+            pred = manager.get_disk_prediction(context.scene)
+            box.label(text=f"Disk: {pred['current_usage_mb']:.0f} / {pred['max_size_gb']:.0f} GB")
+            box.label(text=f"Coverage: {pred['current_cached_frames']}/{pred['total_cacheable_frames']} frames")
+            if pred.get('est_full_size_mb'):
+                if pred['can_fit_all']:
+                    size_label = "Full cache fits"
+                else:
+                    need_mb = pred['est_full_size_mb'] - pred['max_size_gb'] * 1024
+                    size_label = f"Need {need_mb:.0f} MB more"
+                box.label(text=size_label)
+
+            # Per-strip detail (collapsed by default)
+            for sdata in manager.get_per_strip_stats(context.scene):
+                row = box.row()
+                row.label(text=f"{sdata['name']}: {sdata['coverage_pct']:.0f}% cached")
+                row.label(text=f"{sdata['disk_size_mb']:.1f} MB")
+        except Exception:
+            pass
+
 
 class SMART_CACHE_OT_reinit(bpy.types.Operator):
     bl_idname = "smart_cache.reinit"

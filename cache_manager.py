@@ -45,6 +45,10 @@ class CacheManager:
         self.ssd_hits: int = 0          # frames served from disk
         self.on_demand_count: int = 0   # frames rendered on-demand (L2)
 
+        # Render timing statistics
+        self.total_renders: int = 0          # total frames rendered to cache
+        self.total_render_time_ms: float = 0.0  # cumulative render wall-clock time
+
         self._load_index()
 
     @property
@@ -295,12 +299,128 @@ class CacheManager:
         }
 
     def get_hit_stats(self) -> dict:
-        """Get cache hit statistics per tier."""
+        """Get cache hit statistics per tier and render timing."""
+        avg = 0.0
+        if self.total_renders > 0:
+            avg = self.total_render_time_ms / self.total_renders
         return {
             'ram_hits': self.ram_hits,
             'ssd_hits': self.ssd_hits,
             'on_demand_count': self.on_demand_count,
+            'total_renders': self.total_renders,
+            'avg_render_time_ms': avg,
+            'total_render_time_ms': self.total_render_time_ms,
         }
+
+    def record_render(self, time_ms: float):
+        """Record a single rendered frame and its wall-clock time.
+
+        Args:
+            time_ms: Wall-clock time in milliseconds spent rendering this frame.
+        """
+        self.total_renders += 1
+        self.total_render_time_ms += time_ms
+
+    # ── Disk prediction ──────────────────────────────────────────────
+
+    def get_disk_prediction(self, scene) -> dict:
+        """Estimate disk usage if all strips were fully cached.
+
+        Args:
+            scene: The current Blender scene (needed for strip iteration).
+
+        Returns:
+            dict with current/max usage, total cacheable frames, estimated
+            full-size, remaining capacity, and a can-fit-all boolean.
+        """
+        usage = self.get_disk_usage()
+        current_usage_mb = usage['total_size_mb']
+        max_size_gb = usage['max_size_gb']
+        current_cached = usage['frame_count']
+
+        # Count total cacheable frames across all strips
+        total_cacheable = 0
+        se = getattr(scene, 'sequence_editor', None)
+        if se:
+            for s in se.strips:
+                if s.type not in ('MOVIE', 'IMAGE', 'SCENE'):
+                    continue
+                if s.mute:
+                    continue
+                total_cacheable += s.frame_final_end - s.frame_final_start + 1
+
+        avg_size_mb = 0.0
+        if current_cached > 0:
+            avg_size_mb = current_usage_mb / current_cached
+        est_full_size_mb = avg_size_mb * total_cacheable
+        max_size_mb = max_size_gb * 1024
+        remaining_mb = max(max_size_mb - current_usage_mb, 0)
+        can_fit = est_full_size_mb <= max_size_mb
+
+        return {
+            'current_usage_mb': current_usage_mb,
+            'max_size_gb': max_size_gb,
+            'total_cacheable_frames': total_cacheable,
+            'current_cached_frames': current_cached,
+            'est_full_size_mb': est_full_size_mb,
+            'est_remaining_mb': remaining_mb,
+            'can_fit_all': can_fit,
+        }
+
+    def get_per_strip_stats(self, scene) -> list[dict]:
+        """Get per-strip cache statistics for all cacheable strips.
+
+        Args:
+            scene: The current Blender scene.
+
+        Returns:
+            list of dicts, one per cacheable strip, each containing:
+            name, type, cached_l0, cached_l1, total_frames, coverage_pct,
+            disk_size_mb, format.
+        """
+        results = []
+        se = getattr(scene, 'sequence_editor', None)
+        if not se:
+            return results
+
+        for s in se.strips:
+            if s.type not in ('MOVIE', 'IMAGE', 'SCENE'):
+                continue
+            if s.mute:
+                continue
+
+            total = s.frame_final_end - s.frame_final_start + 1
+            if total <= 0:
+                continue
+
+            cached_l0 = len(self.get_cached_frames(s.name, 0))
+            cached_l1 = len(self.get_cached_frames(s.name, 1))
+
+            # Sum file sizes for this strip (L0 + L1)
+            disk_size = 0.0
+            fmt = "PNG"
+            for entry in self.index.values():
+                if entry['strip_name'] == s.name:
+                    disk_size += entry.get('file_size', 0)
+                    if entry['layer'] == 0:
+                        fmt = entry.get('format', 'PNG')
+
+            coverage_pct = 0.0
+            if total > 0:
+                coverage_pct = (cached_l0 / total) * 100.0
+
+            results.append({
+                'name': s.name,
+                'type': s.type,
+                'cached_l0': cached_l0,
+                'cached_l1': cached_l1,
+                'total_frames': total,
+                'coverage_pct': coverage_pct,
+                'disk_size_mb': disk_size / (1024.0 * 1024.0),
+                'format': fmt,
+            })
+
+        return results
 
     # ── L2 on-demand rendering (cold path) ───────────────────────────
 
