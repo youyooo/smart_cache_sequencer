@@ -4,7 +4,7 @@
 
 Blender VSE（视频序列编辑器）的磁盘缓存插件，类似 Adobe After Effects 的缓存系统。将 VSE 片段逐帧渲染为 PNG 缓存到磁盘，支持 LRU 淘汰、修改器哈希校验、代理回放、预取缓存。
 
-## 当前状态 (v1.0.23)
+## 当前状态 (v1.0.25)
 
 | 模块 | 状态 | 备注 |
 |------|------|------|
@@ -150,6 +150,19 @@ proxy.frame_final_duration = cached_frame_count
 - [x] 缓存预热与智能预取（cache_prefetch.py）
 - [x] 1000+ 帧测试方案就绪（Background 模式渲染验证通过）
 - [x] 防重复初始化、Cleanup 覆盖所有路径
+
+### M5：格式多样化与监控（✅ 已完成）
+- [x] JPEG/EXR 格式支持（cache_render.py + cache_manager.py + cache_ui.py）
+- [x] 每 strip 独立格式选择 + 条件显示质量参数
+- [x] Performance Monitor 面板（命中率、渲染耗时、磁盘预测）
+- [x] 每 strip 详细统计（覆盖率、大小、格式）
+- [x] Blender background 模式全导入验证通过
+
+### M6：音视频轨道联动（待进行）
+- [ ] VSE 中为视频片段的音频轨道生成波形图
+- [ ] 波形嵌入到缓存层
+- [ ] 多轨波形叠加显示
+- [ ] 音频驱动的缓存策略
 
 ## 关键文件
 
