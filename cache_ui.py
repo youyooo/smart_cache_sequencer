@@ -84,6 +84,26 @@ class SmartCacheSettings(bpy.types.PropertyGroup):
         max=8192,
         step=100,
     )
+    # Waveform settings
+    show_waveform: BoolProperty(
+        name="Show Waveforms",
+        description="Display audio waveform overlays on sound strips",
+        default=True,
+    )
+    waveform_color: FloatVectorProperty(
+        name="Waveform Color",
+        description="Color of the waveform overlay",
+        subtype='COLOR',
+        size=3,
+        min=0.0, max=1.0,
+        default=(0.3, 0.8, 1.0),
+    )
+    waveform_height: IntProperty(
+        name="Waveform Height",
+        description="Height of waveform as percentage of strip",
+        default=50,
+        min=20, max=100,
+    )
     cache_format: EnumProperty(
         name="Cache Format",
         description="Image format for cached frames",
@@ -271,6 +291,16 @@ class CACHE_PT_smart_cache(bpy.types.Panel):
         box.prop(settings, "session_recovery")
         box.prop(settings, "auto_cache_on_playback")
         box.prop(settings, "persistent_proxy")
+
+        # Waveform settings
+        box.separator()
+        box.label(text="Waveform", icon='SEQ_HISTORY')
+        box.prop(settings, "show_waveform")
+        if settings.show_waveform:
+            row = box.row()
+            row.prop(settings, "waveform_color")
+            row.prop(settings, "waveform_height")
+
         # Show prefetch queue length
         if prefetch:
             qlen = prefetch.queue_length

@@ -3,7 +3,7 @@
 bl_info = {
     "name": "Smart Cache Sequencer",
     "author": "Smart Cache",
-    "version": (1, 0, 25),
+    "version": (1, 1, 0),
     "blender": (4, 4, 0),
     "location": "Sequencer > Sidebar > Smart Cache",
     "description": "AE-inspired disk caching for VSE strips with layered cache and position-independent hashing",
@@ -22,7 +22,12 @@ from . import cache_prefetch as cp_mod
 from . import cache_handlers
 from . import cache_ui
 from . import cache_core
+from . import cache_waveform
 from . import cache_system
+
+
+# Module-level waveform manager instance
+_waveform_mgr = None
 
 
 def get_singletons():
@@ -155,6 +160,12 @@ def init_singletons(scene):
 
         cache_system.takeover_system_cache(scene)
 
+        # Initialize waveform manager
+        global _waveform_mgr
+        _waveform_mgr = cache_waveform.WaveformManager(cache_manager=manager)
+        if settings.show_waveform:
+            _waveform_mgr.enable_waveforms(scene)
+
         # Try session recovery first; fall back to full auto-cache
         if prefetch.session_recovery:
             recovered = prefetch.load_session_state(scene)
@@ -193,6 +204,14 @@ def cleanup_singletons(context):
                     server.disable_cache_playback(bpy.context)
         except Exception:
             pass
+
+    global _waveform_mgr
+    if _waveform_mgr:
+        try:
+            _waveform_mgr.disable_waveforms(bpy.context.scene)
+        except Exception:
+            pass
+        _waveform_mgr = None
 
     cache_core.clear_singletons()
     print("[Smart Cache] Cleaned up")
