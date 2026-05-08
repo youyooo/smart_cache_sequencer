@@ -84,6 +84,23 @@ class SmartCacheSettings(bpy.types.PropertyGroup):
         max=8192,
         step=100,
     )
+    cache_format: EnumProperty(
+        name="Cache Format",
+        description="Image format for cached frames",
+        items=[
+            ('PNG', 'PNG', 'Lossless PNG (RGBA, best quality)'),
+            ('JPEG', 'JPEG', 'Lossy JPEG (small file size, RGB only)'),
+            ('EXR', 'EXR', 'OpenEXR (HDR, 32-bit float, for compositing)'),
+        ],
+        default='PNG',
+    )
+    jpeg_quality: IntProperty(
+        name="JPEG Quality",
+        description="JPEG quality for cached frames (lower = smaller file)",
+        default=75,
+        min=1,
+        max=100,
+    )
     proxy_render_size: EnumProperty(
         name="Proxy Render Size",
         description="Proxy resolution for VSE preview",
@@ -241,7 +258,11 @@ class CACHE_PT_smart_cache(bpy.types.Panel):
         except Exception:
             pass
 
-        box.prop(settings, "cache_quality")
+        box.prop(settings, "cache_format")
+        if settings.cache_format == "JPEG":
+            box.prop(settings, "jpeg_quality")
+        elif settings.cache_format == "PNG":
+            box.prop(settings, "cache_quality")
         box.prop(settings, "proxy_render_size")
         box.prop(settings, "cache_directory")
         box.prop(settings, "prefetch_lookahead")
@@ -271,12 +292,13 @@ class CACHE_PT_smart_cache(bpy.types.Panel):
                         continue
                     cached_l0 = len(manager.get_cached_frames(strip.name, 0))
                     has_l1 = manager.strip_has_cache(strip.name, 1)
-                    strip_progress.append((strip.name, cached_l0, total, has_l1))
+                    cache_fmt = manager.get_frame_format(strip.name, 0)
+                    strip_progress.append((strip.name, cached_l0, total, has_l1, cache_fmt))
 
                 if strip_progress:
                     box = layout.box()
                     box.label(text="Strip Cache Progress", icon='SEQUENCE')
-                    for name, cached, total, has_l1 in strip_progress:
+                    for name, cached, total, has_l1, cache_fmt in strip_progress:
                         pct = cached / max(total, 1)
                         row = box.row()
                         row.label(text=f"  {name}")
@@ -285,7 +307,7 @@ class CACHE_PT_smart_cache(bpy.types.Panel):
                         bar.progress(factor=pct)
                         icons = []
                         if cached > 0:
-                            icons.append("L0")
+                            icons.append(f"L0 ({cache_fmt})")
                         if has_l1:
                             icons.append("L1")
                         if icons:

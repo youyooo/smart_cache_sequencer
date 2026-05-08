@@ -77,11 +77,27 @@ class CacheManager:
         os.makedirs(dir_path, exist_ok=True)
         return dir_path
 
-    def get_frame_path(self, strip, frame: int, layer: int = 0) -> str:
-        """Get the expected file path for a cached frame."""
+    def get_frame_path(self, strip, frame: int, layer: int = 0, fmt: str = "PNG") -> str:
+        """Get the expected file path for a cached frame.
+
+        Args:
+            fmt: Cache format — "PNG" (.png), "JPEG" (.jpg), or "EXR" (.exr).
+        """
         cache_dir = self.get_cache_dir(strip, layer)
         safe_name = _safe_strip_name(strip.name)
-        return os.path.join(cache_dir, f"{safe_name}_{frame:04d}.png")
+        ext_map = {"PNG": ".png", "JPEG": ".jpg", "EXR": ".exr"}
+        ext = ext_map.get(fmt, ".png")
+        return os.path.join(cache_dir, f"{safe_name}_{frame:04d}{ext}")
+
+    def get_frame_format(self, strip_name: str, layer: int = 0) -> str:
+        """Get the cached format for a strip at a given layer.
+
+        Returns format string ("PNG", "JPEG", "EXR") or "PNG" if no frames cached.
+        """
+        for entry in self.index.values():
+            if entry['strip_name'] == strip_name and entry['layer'] == layer:
+                return entry.get('format', 'PNG')
+        return "PNG"
 
     def frame_exists(self, strip, frame: int, layer: int = 0) -> bool:
         """Check if a cached frame exists on disk."""
@@ -93,6 +109,11 @@ class CacheManager:
         key = ck.compute_frame_key(strip, frame, layer)
         file_size = os.path.getsize(path) if os.path.exists(path) else 0
 
+        # Infer format from file extension
+        ext = os.path.splitext(path)[1].lower()
+        fmt_map = {'.png': 'PNG', '.jpg': 'JPEG', '.jpeg': 'JPEG', '.exr': 'EXR'}
+        frame_format = fmt_map.get(ext, 'PNG')
+
         self.index[key] = {
             'strip_name': strip.name,
             'strip_hash': ck.strip_base_hash(strip),
@@ -100,6 +121,7 @@ class CacheManager:
             'layer': layer,
             'path': path,
             'file_size': file_size,
+            'format': frame_format,
             'created_at': time.time(),
             'last_accessed': time.time(),
         }
@@ -286,21 +308,25 @@ class CacheManager:
         """Render a single frame on demand without disk caching.
 
         L2 cold path: renders the frame to a temporary file, reads the
-        PNG bytes back, and removes the temporary file.  Does NOT write
+        image bytes back, and removes the temporary file.  Does NOT write
         to the persistent cache or record in the index.
 
         Designed for jump-to-frame or infrequently-accessed frames in
         long sequences.
 
-        Returns PNG bytes or None on failure.
+        Returns image bytes or None on failure.
         """
         from .cache_render import _render_strip_frame
         import bpy
+        settings = bpy.context.scene.smart_cache
+        fmt = settings.cache_format
+        quality = settings.jpeg_quality if fmt == "JPEG" else settings.cache_quality
+        ext_map = {"PNG": ".png", "JPEG": ".jpg", "EXR": ".exr"}
         scene = bpy.context.scene
-        fd, tmp_path = tempfile.mkstemp(suffix='.png')
+        fd, tmp_path = tempfile.mkstemp(suffix=ext_map.get(fmt, ".png"))
         os.close(fd)
         try:
-            rendered = _render_strip_frame(scene, strip, frame, tmp_path, layer)
+            rendered = _render_strip_frame(scene, strip, frame, tmp_path, layer, fmt=fmt, quality=quality)
             if rendered and os.path.exists(tmp_path):
                 with open(tmp_path, 'rb') as f:
                     frame_bytes = f.read()

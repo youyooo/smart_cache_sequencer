@@ -82,9 +82,13 @@ def _do_raw_render(scene, output_path) -> bool:
     return False
 
 
-def _render_strip_frame(scene, strip, frame: int, output_path: str, layer: int = 0) -> bool:
-    """Render a single frame of a strip to a PNG file.
+def _render_strip_frame(
+    scene, strip, frame: int, output_path: str, layer: int = 0,
+    fmt: str = "PNG", quality: int = 90,
+) -> bool:
+    """Render a single frame of a strip to a cached image file.
 
+    Supports PNG (lossless), JPEG (lossy/small), and EXR (HDR/32-bit) formats.
     Saves and restores all scene state (mutes, render settings, frame, camera).
     Handles modifier enable/disable for layer 0 (base) vs layer 1 (with modifiers).
 
@@ -102,6 +106,7 @@ def _render_strip_frame(scene, strip, frame: int, output_path: str, layer: int =
     original_format = render.image_settings.file_format
     original_color_mode = render.image_settings.color_mode
     original_quality = render.image_settings.quality
+    original_color_depth = render.image_settings.color_depth
     original_res_x = render.resolution_x
     original_res_y = render.resolution_y
     original_use_sequencer = render.use_sequencer
@@ -131,9 +136,18 @@ def _render_strip_frame(scene, strip, frame: int, output_path: str, layer: int =
         # Make sure the VSE is included in renders
         render.use_sequencer = True
         render.filepath = output_path
-        render.image_settings.file_format = "PNG"
-        render.image_settings.color_mode = "RGBA"
-        render.image_settings.quality = 90
+        if fmt == "EXR":
+            render.image_settings.file_format = "OPEN_EXR"
+            render.image_settings.color_mode = "RGBA"
+            render.image_settings.color_depth = "32"
+        elif fmt == "JPEG":
+            render.image_settings.file_format = "JPEG"
+            render.image_settings.color_mode = "RGB"
+            render.image_settings.quality = quality
+        else:  # PNG
+            render.image_settings.file_format = "PNG"
+            render.image_settings.color_mode = "RGBA"
+            render.image_settings.quality = quality
 
         # ── Render ────────────────────────────────────────────────
         return _do_raw_render(scene, output_path)
@@ -154,6 +168,7 @@ def _render_strip_frame(scene, strip, frame: int, output_path: str, layer: int =
         render.image_settings.file_format = original_format
         render.image_settings.color_mode = original_color_mode
         render.image_settings.quality = original_quality
+        render.image_settings.color_depth = original_color_depth
         render.resolution_x = original_res_x
         render.resolution_y = original_res_y
         scene.camera = original_camera
@@ -267,7 +282,10 @@ class CacheRenderManager:
         if strip is None:
             return
 
-        output_path = self.cache_manager.get_frame_path(strip, frame, layer)
+        settings = bpy.context.scene.smart_cache
+        fmt = settings.cache_format
+        quality = settings.jpeg_quality if fmt == "JPEG" else settings.cache_quality
+        output_path = self.cache_manager.get_frame_path(strip, frame, layer, fmt=fmt)
         if os.path.exists(output_path):
             # Already cached on disk — record in index if missing
             self.cache_manager.record_cached_frame(strip, frame, layer, output_path)
@@ -275,7 +293,7 @@ class CacheRenderManager:
 
         self._is_internal_rendering = True
         try:
-            rendered = _render_strip_frame(scene, strip, frame, output_path, layer)
+            rendered = _render_strip_frame(scene, strip, frame, output_path, layer, fmt=fmt, quality=quality)
 
             if rendered and os.path.exists(output_path):
                 self.cache_manager.record_cached_frame(strip, frame, layer, output_path)
@@ -312,15 +330,19 @@ class CacheRenderManager:
         Does NOT write to the persistent cache or update the index.
         Does NOT store in the RAM hot cache (designed for infrequent access).
 
-        Returns PNG bytes or None on failure.
+        Returns image bytes or None on failure.
         """
+        settings = bpy.context.scene.smart_cache
+        fmt = settings.cache_format
+        quality = settings.jpeg_quality if fmt == "JPEG" else settings.cache_quality
+        ext_map = {"PNG": ".png", "JPEG": ".jpg", "EXR": ".exr"}
         scene = bpy.context.scene
-        fd, tmp_path = tempfile.mkstemp(suffix='.png')
+        fd, tmp_path = tempfile.mkstemp(suffix=ext_map.get(fmt, ".png"))
         os.close(fd)
 
         self._is_internal_rendering = True
         try:
-            rendered = _render_strip_frame(scene, strip, frame, tmp_path, layer)
+            rendered = _render_strip_frame(scene, strip, frame, tmp_path, layer, fmt=fmt, quality=quality)
             if rendered and os.path.exists(tmp_path):
                 with open(tmp_path, 'rb') as f:
                     frame_bytes = f.read()
